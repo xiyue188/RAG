@@ -85,30 +85,29 @@ def main():
         # Step 1: 检索
         results = retriever.retrieve(question, top_k=3)
 
-        if not results:
-            print("✗ 未找到相关文档")
-            continue
-
         # 显示检索结果
-        print(f"✓ 找到 {len(results)} 个相关文档:\n")
-        for i, result in enumerate(results, 1):
-            meta = result['metadata']
-            print(f"  {i}. {meta.get('category', 'unknown')}/{meta.get('file', 'unknown')}")
+        if results:
+            print(f"✓ 找到 {len(results)} 个候选文档:")
+            for i, result in enumerate(results, 1):
+                meta = result['metadata']
+                distance = result.get('distance', 'N/A')
+                print(f"  {i}. {meta.get('category', 'unknown')}/{meta.get('file', 'unknown')} "
+                      f"(相似度: {distance:.3f})")
+        else:
+            print("✗ 未找到相关文档")
 
-        # Step 2: 组合上下文
-        context = retriever.retrieve_with_context(question, top_k=3)
-
-        # Step 3: LLM 生成答案
+        # Step 2: 智能生成答案（自动分流）
         print("\n正在生成答案...")
 
         try:
-            answer = llm.answer_with_context(question, context)
+            result = llm.answer_smart(question, results)
 
             print("\n" + "=" * 70)
             print("回答:")
             print("=" * 70)
-            print(answer)
+            print(result['answer'])
             print("=" * 70)
+            print(f"\n[模式: {result['mode']} | {result['reason']}]")
 
         except Exception as e:
             print(f"\n✗ 生成答案失败: {e}")

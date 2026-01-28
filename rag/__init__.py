@@ -9,7 +9,7 @@ from .retriever import Retriever
 from .ingestion import DocumentIngestion
 from .llm import LLMClient
 
-__all__ = [
+__all__ = [ 
     "chunk_text",
     "Embedder",
     "VectorDB",
@@ -17,5 +17,7 @@ __all__ = [
     "DocumentIngestion",
     "LLMClient",
 ]
+
+#定义包的公开 API，使用 from rag import * 时只会导入这些名称，隐藏内部实现细节。
 
 __version__ = "1.0.0"

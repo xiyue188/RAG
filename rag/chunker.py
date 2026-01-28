@@ -56,7 +56,7 @@ def chunk_text(text, size=None, overlap=None):
 
 def chunk_text_by_sentences(text, size=None, overlap=None, respect_sentences=True):
     """
-    智能分块：尊重句子边界
+    智能分块：尊重句子边界aaaaaa
 
     参数:
         text: str - 要分块的文本

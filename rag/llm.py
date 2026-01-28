@@ -8,8 +8,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from config import (
-    LLM_PROVIDER, SYSTEM_PROMPT, QUERY_TEMPLATE,
-    LLM_TEMPERATURE, LLM_MAX_TOKENS, LLM_TIMEOUT,
+    LLM_PROVIDER, SYSTEM_PROMPT, QUERY_TEMPLATE, NO_CONTEXT_TEMPLATE,
+    LLM_TEMPERATURE, LLM_MAX_TOKENS, LLM_TIMEOUT, SIMILARITY_THRESHOLD,
     get_llm_config
 )
 from typing import Optional, List, Dict
@@ -191,42 +191,101 @@ class LLMClient:
 
         return answer
 
-    def stream_generate(self, prompt: str, system_prompt: Optional[str] = None):
+    def answer_without_context(self, question: str,
+                               template: Optional[str] = None) -> str:
         """
-        流式生成（可选功能）
+        无上下文回答问题（使用 LLM 通用知识）
 
         参数:
-            prompt: str - 用户提示词
-            system_prompt: str - 系统提示词
+            question: str - 用户问题
+            template: str - 提示词模板（可选）
 
-        生成器:
-            每次返回一个 token
+        返回:
+            str - LLM 生成的答案
         """
-        # 简化实现：只支持 OpenAI
-        if self.provider != "openai":
-            # 非流式返回
-            yield self.generate(prompt, system_prompt)
-            return
+        template = template or NO_CONTEXT_TEMPLATE
 
-        system_prompt = system_prompt or SYSTEM_PROMPT
+        # 构建提示词
+        prompt = template.format(question=question)
 
-        response = self.client.chat.completions.create(
-            model=self.config["model"],
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=LLM_TEMPERATURE,
-            max_tokens=LLM_MAX_TOKENS,
-            stream=True
-        )
+        # 调用 LLM
+        answer = self.generate(prompt)
 
-        for chunk in response:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+        return answer
 
-    def __repr__(self):
-        return f"LLMClient(provider={self.provider}, model={self.config.get('model', 'unknown')})"
+    def answer_smart(self, question: str, retrieval_results: List[Dict],
+                    threshold: Optional[float] = None) -> Dict:
+        """
+        智能回答（基于检索置信度自动分流）
+
+        参数:
+            question: str - 用户问题
+            retrieval_results: List[Dict] - 检索结果列表
+            threshold: float - 相似度阈值（可选，默认使用配置）
+
+        返回:
+            Dict - 包含答案和元信息:
+                - answer: str - 回答内容
+                - mode: str - 回答模式 ('with_context' / 'without_context')
+                - max_similarity: float - 最高相似度
+                - relevant_docs_count: int - 相关文档数量
+        """
+        threshold = threshold if threshold is not None else SIMILARITY_THRESHOLD
+
+        # 检查是否有检索结果
+        if not retrieval_results:
+            # 没有任何结果，使用通用知识
+            answer = self.answer_without_context(question)
+            return {
+                'answer': answer,
+                'mode': 'without_context',
+                'max_similarity': None,
+                'relevant_docs_count': 0,
+                'reason': '知识库中未找到相关文档'
+            }
+
+        # 获取最相关文档的相似度（距离越小越相似）
+        max_similarity = retrieval_results[0].get('distance', float('inf'))
+
+        # 根据阈值判断
+        if max_similarity < threshold:
+            # 有可靠文档，使用文档回答
+            # 组合上下文
+            context_parts = []
+            relevant_count = 0
+            for i, result in enumerate(retrieval_results, 1):
+                # 只使用相似度高于阈值的文档
+                if result.get('distance', float('inf')) < threshold:
+                    meta = result['metadata']
+                    doc = result['document']
+                    context_parts.append(
+                        f"[文档 {i}] 来源: {meta.get('category', 'unknown')}/{meta.get('file', 'unknown')}\n"
+                        f"内容: {doc}\n"
+                    )
+                    relevant_count += 1
+
+            context = "\n".join(context_parts)
+            answer = self.answer_with_context(question, context)
+
+            return {
+                'answer': answer,
+                'mode': 'with_context',
+                'max_similarity': max_similarity,
+                'relevant_docs_count': relevant_count,
+                'reason': f'找到 {relevant_count} 个相关文档（相似度 < {threshold}）'
+            }
+        else:
+            # 没有可靠文档，使用通用知识
+            answer = self.answer_without_context(question)
+            return {
+                'answer': answer,
+                'mode': 'without_context',
+                'max_similarity': max_similarity,
+                'relevant_docs_count': 0,
+                'reason': f'文档相关度不足（{max_similarity:.3f} >= {threshold}）'
+            }
+
+
 
 
 if __name__ == "__main__":

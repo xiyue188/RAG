@@ -99,7 +99,7 @@ class VectorDB:
             where_document: Dict - 文档内容过滤条件（可选）
 
         返回:
-            dict - 查询结果
+            dict - 查询结果（包含 ids, documents, metadatas, distances）
         """
         if self.collection is None:
             self.get_collection()
@@ -108,7 +108,8 @@ class VectorDB:
             query_embeddings=query_embeddings,
             n_results=n_results,
             where=where,
-            where_document=where_document
+            where_document=where_document,
+            include=['documents', 'metadatas', 'distances']  # 显式包含距离信息
         )
 
     def get(self, ids: Optional[List[str]] = None, where: Optional[Dict] = None,
