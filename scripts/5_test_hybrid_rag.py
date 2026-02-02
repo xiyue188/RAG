@@ -40,29 +40,38 @@ def main():
         print("  请先运行: python scripts/2_ingest_docs.py")
         return
 
-    # 测试用例：包含在知识库内和知识库外的问题
-    test_cases = [
-        {
-            "question": "可以带宠物来公司吗？",
-            "expected_mode": "with_context",
-            "description": "知识库内问题 - 应该使用文档回答"
-        },
-        {
-            "question": "公司的远程办公政策是什么？",
-            "expected_mode": "with_context",
-            "description": "知识库内问题 - 应该使用文档回答"
-        },
-        {
-            "question": "Python 中如何实现单例模式？",
-            "expected_mode": "without_context",
-            "description": "知识库外问题 - 应该使用 LLM 通用知识回答"
-        },
-        {
-            "question": "什么是量子计算机？",
-            "expected_mode": "without_context",
-            "description": "知识库外问题 - 应该使用 LLM 通用知识回答"
-        },
-    ]
+    # 动态生成测试用例
+    def generate_test_cases(vdb):
+        """动态生成测试用例"""
+        sample = vdb.get(limit=5)
+        test_cases = []
+
+        # 知识库内问题（从文档生成）
+        for i, doc in enumerate(sample['documents'][:2]):
+            query = doc[:30].strip() + "?"
+            test_cases.append({
+                "question": query,
+                "expected_mode": "with_context",
+                "description": f"知识库内问题 {i+1} - 应该使用文档回答"
+            })
+
+        # 知识库外问题（通用问题）
+        test_cases.extend([
+            {
+                "question": "Python 中如何实现单例模式？",
+                "expected_mode": "without_context",
+                "description": "知识库外问题 - 应该使用 LLM 通用知识回答"
+            },
+            {
+                "question": "什么是量子计算机？",
+                "expected_mode": "without_context",
+                "description": "知识库外问题 - 应该使用 LLM 通用知识回答"
+            },
+        ])
+
+        return test_cases
+
+    test_cases = generate_test_cases(vectordb)
 
     print("\n" + "=" * 70)
     print(f"开始测试（共 {len(test_cases)} 个用例）")
@@ -126,6 +135,9 @@ def main():
     print(f"  • 距离 < {SIMILARITY_THRESHOLD} → 使用文档回答（with_context）")
     print(f"  • 距离 >= {SIMILARITY_THRESHOLD} → 使用 LLM 通用知识（without_context）")
     print("  • LLM 会标注哪些内容来自通用知识")
+    print("\n说明:")
+    print("  • 前2个测试用例从知识库动态生成")
+    print("  • 后2个测试用例为固定的通用知识问题")
 
 
 if __name__ == "__main__":

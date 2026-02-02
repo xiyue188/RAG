@@ -321,13 +321,15 @@ if __name__ == "__main__":
         print("\n测试2: RAG 场景（带上下文）")
         print("-" * 70)
 
+        print("注意：以下使用示例数据进行测试\n")
+
         context = """
-        [文档 1] 来源: policies/pet_policy.md
-        内容: TechCorp 宠物政策：员工可以在每周五带宠物来办公室。
-        宠物必须性格温顺且已接种疫苗。CEO 的金毛寻回犬是公司吉祥物。
+        [文档 1] 来源: test/sample_policy.md
+        内容: 这是一个示例政策文档。用于测试系统功能。
+        包含规定和制度相关内容，实际使用时请替换为真实文档。
         """
 
-        question = "可以带狗来公司吗？"
+        question = "文档中包含什么内容？"
 
         print(f"问题: {question}\n")
         print(f"上下文:\n{context}\n")

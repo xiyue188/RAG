@@ -32,14 +32,20 @@ def main():
         print("  请先运行: python scripts/2_ingest_docs.py")
         return
 
-    # 测试查询
-    test_queries = [
-        "可以带宠物来公司吗？",
-        "远程办公有什么政策？",
-        "公司有什么福利？"
-    ]
+    # 动态生成测试查询
+    def get_sample_queries(vdb, n=3):
+        """从数据库动态生成测试查询"""
+        sample = vdb.get(limit=10)
+        queries = []
+        for doc in sample['documents'][:n]:
+            # 取文档前20字作为查询
+            query = doc[:20].strip() + "?"
+            queries.append(query)
+        return queries
 
-    print(f"\n将执行 {len(test_queries)} 个测试查询\n")
+    test_queries = get_sample_queries(vectordb, n=3)
+    print(f"\n动态生成 {len(test_queries)} 个测试查询")
+    print("（从数据库文档中提取前20字作为查询）\n")
 
     for i, query in enumerate(test_queries, 1):
         print("=" * 70)

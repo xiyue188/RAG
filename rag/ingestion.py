@@ -227,22 +227,24 @@ if __name__ == "__main__":
 
     # 测试文本摄入
     print("测试文本摄入:")
+    print("注意：以下使用示例数据进行测试，实际使用时请替换为您的领域数据\n")
+
     test_text = """
-    TechCorp 宠物政策
+    示例政策文档
 
-    员工可以在每周五带宠物来办公室。
-    宠物必须：
-    - 性格温顺，不攻击人
-    - 已接种所有必要疫苗
-    - 在公共区域需要牵引
+    这是一个用于测试系统功能的示例文档。
+    实际使用时，请替换为您所在领域的真实文档内容。
 
-    CEO 的金毛寻回犬是公司吉祥物。
+    测试要点：
+    - 文档分块功能
+    - 向量化处理
+    - 数据库存储
     """
 
     chunk_count = ingestion.ingest_text(
         text=test_text,
-        doc_id="test_policy",
-        metadata={"category": "policies", "file": "test.md"}
+        doc_id="test_sample",
+        metadata={"category": "test", "file": "sample.md"}
     )
 
     print(f"✓ 文本摄入完成，生成 {chunk_count} 个块")

@@ -26,9 +26,9 @@ class Embedder:
             model_name: str - 模型名称，默认从 config 读取
         """
         self.model_name = model_name or EMBEDDING_MODEL_NAME
-        print(f"加载 Embedding 模型: {self.model_name}")
+        print(f"Loading Embedding model: {self.model_name}")
         self.model = SentenceTransformer(self.model_name)
-        print(f"✓ 模型加载完成")
+        print(f"Model loaded successfully")
 
     def encode(self, texts: Union[str, List[str]], to_list=True, batch_size=None):
         """

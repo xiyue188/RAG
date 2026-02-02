@@ -94,7 +94,7 @@ def check_config():
     from config import (
         PROJECT_ROOT, DATA_DIR, DB_DIR,
         EMBEDDING_MODEL_NAME, CHUNK_SIZE, CHUNK_OVERLAP,
-        LLM_PROVIDER, TOP_K_RESULTS
+        LLM_PROVIDER, TOP_K_RESULTS, RETRIEVAL_MODE
     )
 
     print("=" * 70)
@@ -115,6 +115,8 @@ def check_config():
 
     print(f"\n【检索配置】")
     print(f"  Top-K: {TOP_K_RESULTS}")
+    print(f"  检索模式: {RETRIEVAL_MODE}")
+    print(f"  高级检索: 已启用（Query Rewrite + Multi-Query）")
 
     print(f"\n【LLM 配置】")
     print(f"  提供商: {LLM_PROVIDER}")

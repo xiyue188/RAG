@@ -1,18 +1,40 @@
 """
 配置文件 - 唯一真相源（Single Source of Truth）
-所有配置参数集中管理在这里
+从 .env 读取所有配置参数，提供默认值和验证
 """
 
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 加载 .env 文件 - 指定完整路径
+# 加载 .env 文件
 env_path = Path(__file__).parent / '.env'
 load_dotenv(dotenv_path=env_path)
 
 # ============================================================
-# 项目路径配置
+# 辅助函数
+# ============================================================
+
+def get_bool(key: str, default: bool = False) -> bool:
+    """从环境变量读取布尔值"""
+    return os.getenv(key, str(default)).lower() in ('true', '1', 'yes')
+
+def get_int(key: str, default: int) -> int:
+    """从环境变量读取整数"""
+    try:
+        return int(os.getenv(key, str(default)))
+    except ValueError:
+        return default
+
+def get_float(key: str, default: float) -> float:
+    """从环境变量读取浮点数"""
+    try:
+        return float(os.getenv(key, str(default)))
+    except ValueError:
+        return default
+
+# ============================================================
+# 项目路径配置（不可变）
 # ============================================================
 PROJECT_ROOT = Path(__file__).parent
 DATA_DIR = PROJECT_ROOT / "data" / "documents"
@@ -22,38 +44,88 @@ DB_DIR = PROJECT_ROOT / "chroma_db"
 # 向量数据库配置
 # ============================================================
 CHROMA_DB_PATH = str(DB_DIR)
-COLLECTION_NAME = "techcorp_docs"
-SIMILARITY_METRIC = "cosine"  # 可选: cosine, l2, ip
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "techcorp_docs")
+SIMILARITY_METRIC = os.getenv("SIMILARITY_METRIC", "cosine")
 
 # ============================================================
 # Embedding 模型配置
 # ============================================================
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 的输出维度
+EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
+EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 固定维度
 
 # ============================================================
 # 文本分块配置
 # ============================================================
-CHUNK_SIZE = 500        # 每个块的字符数
-CHUNK_OVERLAP = 100     # 重叠字符数
-CHUNK_STEP = CHUNK_SIZE - CHUNK_OVERLAP  # 滑动步长 = 400
+CHUNK_SIZE = get_int("CHUNK_SIZE", 500)
+CHUNK_OVERLAP = get_int("CHUNK_OVERLAP", 100)
+CHUNK_STEP = CHUNK_SIZE - CHUNK_OVERLAP
 
 # ============================================================
-# 检索配置
+# 检索配置（阶段1）
 # ============================================================
-TOP_K_RESULTS = 3       # 检索返回的 top-k 结果数量
-MIN_RELEVANCE_SCORE = 0.3  # 最小相关性阈值（可选）
+TOP_K_RESULTS = get_int("TOP_K_RESULTS", 3)
+SIMILARITY_THRESHOLD = get_float("SIMILARITY_THRESHOLD", 0.7)
+RETRIEVAL_DISTANCE_THRESHOLD = get_float("RETRIEVAL_DISTANCE_THRESHOLD", 0.7)
+MIN_RELEVANCE_SCORE = 0.3  # 保留用于未来扩展
 
-# 混合 RAG 配置
-SIMILARITY_THRESHOLD = 0.7  # 相似度阈值（距离 < 0.7 认为相关）
-# ChromaDB 使用余弦距离，范围 0-2，距离越小越相似
-# 0.0 = 完全相同，0.5 = 较相关，1.0 = 不太相关，2.0 = 完全不相关
+# 检索模式
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "metadata_only")
+
+# 检索优化开关
+ENABLE_THRESHOLD_FILTERING = get_bool("ENABLE_THRESHOLD_FILTERING", True)
+ENABLE_AUTO_CLASSIFICATION = get_bool("ENABLE_AUTO_CLASSIFICATION", True)
+
+# ============================================================
+# 阶段2: LLM增强检索配置
+# ============================================================
+ENABLE_QUERY_REWRITE = get_bool("ENABLE_QUERY_REWRITE", False)
+ENABLE_MULTI_QUERY = get_bool("ENABLE_MULTI_QUERY", False)
+NUM_EXPANDED_QUERIES = get_int("NUM_EXPANDED_QUERIES", 3)
+
+# Query Rewrite 提示词模板
+QUERY_REWRITE_PROMPT = """请将以下用户查询重写为更适合向量检索的形式。
+要求：
+1. 保持原意，但使用更精确的关键词
+2. 去除口语化表达
+3. 补充可能的同义词或相关术语
+4. 只输出重写后的查询，不要解释
+
+原始查询：{query}
+
+重写后的查询："""
+
+# Multi-Query 提示词模板
+MULTI_QUERY_PROMPT = """请为以下查询生成 {n} 个不同角度的变体查询，用于提高检索召回率。
+要求：
+1. 每个变体从不同角度描述同一个问题
+2. 使用不同的关键词和表达方式
+3. 每行一个查询，不要编号
+4. 只输出查询，不要解释
+
+原始查询：{query}
+
+变体查询："""
+
+# 关键词分类映射（仅在 RETRIEVAL_MODE="keyword" 时使用）
+# 根据您的实际领域修改以下关键词
+CATEGORY_KEYWORDS = {
+    "benefits": [
+        "401k", "保险", "福利", "假期", "休假", "年假", "病假", "健康",
+        "退休", "养老", "医疗", "牙科", "视力", "401K", "配对", "匹配"
+    ],
+    "policies": [
+        "宠物", "远程", "办公", "着装", "考勤", "规定", "政策", "制度",
+        "出勤", "迟到", "请假", "工作时间", "dress code", "pet", "remote"
+    ],
+    "general": [
+        "公司", "文化", "介绍", "关于", "是什么", "历史", "使命", "愿景"
+    ]
+}
 
 # ============================================================
 # LLM API 配置
 # ============================================================
-# 支持多种 LLM 提供商
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # openai, anthropic, zhipu, qwen
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "zhipu")
 
 # OpenAI 配置
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -73,16 +145,16 @@ QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-turbo")
 
 # LLM 生成参数
-LLM_TEMPERATURE = 0.7  # 0.0 = 每次回答一样; 0.7 = 中等随机性; 1.0 = 高随机性
-LLM_MAX_TOKENS = 500
-LLM_TIMEOUT = 30  # 秒
+LLM_TEMPERATURE = get_float("LLM_TEMPERATURE", 0.7)
+LLM_MAX_TOKENS = get_int("LLM_MAX_TOKENS", 500)
+LLM_TIMEOUT = get_int("LLM_TIMEOUT", 30)
 
 # ============================================================
 # RAG 系统提示词模板
 # ============================================================
 
 # 严格模式：只基于文档回答
-SYSTEM_PROMPT_STRICT = """你是 TechCorp 公司的智能助手。
+SYSTEM_PROMPT_STRICT = """你是一个智能文档助手。
 你的任务是根据提供的文档内容回答用户问题。
 
 重要规则：
@@ -93,7 +165,7 @@ SYSTEM_PROMPT_STRICT = """你是 TechCorp 公司的智能助手。
 """
 
 # 混合模式：文档优先 + LLM 补充
-SYSTEM_PROMPT_HYBRID = """你是 TechCorp 公司的智能助手。
+SYSTEM_PROMPT_HYBRID = """你是一个智能文档助手。
 你的任务是根据提供的文档内容回答用户问题。
 
 重要规则：
@@ -109,7 +181,7 @@ SYSTEM_PROMPT_HYBRID = """你是 TechCorp 公司的智能助手。
 # ============================================================
 
 # 专业正式风格
-SYSTEM_PROMPT_PROFESSIONAL = """你是 TechCorp 公司的专业知识顾问。
+SYSTEM_PROMPT_PROFESSIONAL = """你是一个专业的文档知识顾问。
 
 回答风格：
 • 使用正式、专业的语言
@@ -125,7 +197,7 @@ SYSTEM_PROMPT_PROFESSIONAL = """你是 TechCorp 公司的专业知识顾问。
 """
 
 # 友好简洁风格
-SYSTEM_PROMPT_FRIENDLY = """你是 TechCorp 公司的智能助手。
+SYSTEM_PROMPT_FRIENDLY = """你是一个友好的智能文档助手。
 
 回答风格：
 • 友好、亲切、易懂
@@ -141,7 +213,7 @@ SYSTEM_PROMPT_FRIENDLY = """你是 TechCorp 公司的智能助手。
 """
 
 # 技术详细风格
-SYSTEM_PROMPT_TECHNICAL = """你是 TechCorp 公司的技术文档助手。
+SYSTEM_PROMPT_TECHNICAL = """你是一个技术文档助手。
 
 回答风格：
 • 提供详细、全面的技术信息
@@ -232,27 +304,27 @@ QUERY_TEMPLATE_DETAILED = """请基于以下上下文信息，详细回答用户
 # 无上下文时的提示模板
 NO_CONTEXT_TEMPLATE = """用户问题：{question}
 
-注意：知识库中没有找到相关文档。请基于你的通用知识回答，并明确说明这不是来自 TechCorp 的官方文档。
+注意：知识库中没有找到相关文档。请基于你的通用知识回答，并明确说明这不是来自知识库的文档。
 
 回答："""
 
 # ============================================================
 # 日志配置
 # ============================================================
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")  # DEBUG, INFO, WARNING, ERROR
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 LOG_FILE = PROJECT_ROOT / "rag.log"
 
 # ============================================================
-# 性能配置
+# 性能配置（固定值，一般不需调整）
 # ============================================================
-BATCH_SIZE = 32  # 批量处理大小
-USE_GPU = False  # 是否使用 GPU（需要安装 torch-gpu）
+BATCH_SIZE = 32
+USE_GPU = False
 
 # ============================================================
-# 文档处理配置
+# 文档处理配置（固定值）
 # ============================================================
-SUPPORTED_FILE_TYPES = [".md", ".txt", ".pdf"]  # 支持的文件类型
-ENCODING = "utf-8"  # 文件编码
+SUPPORTED_FILE_TYPES = [".md", ".txt", ".pdf"]
+ENCODING = "utf-8"
 
 # ============================================================
 # 辅助函数
