@@ -20,7 +20,14 @@ from config import (
     ENABLE_MULTI_QUERY,
     NUM_EXPANDED_QUERIES,
     QUERY_REWRITE_PROMPT,
-    MULTI_QUERY_PROMPT
+    MULTI_QUERY_PROMPT,
+    ENABLE_RERANK,
+    RERANK_TOP_K,
+    RERANK_MODEL,
+    ENABLE_HYBRID,
+    BM25_WEIGHT,
+    VECTOR_WEIGHT,
+    HYBRID_TOP_K
 )
 from typing import List, Dict, Optional, TYPE_CHECKING
 import logging
@@ -297,7 +304,7 @@ class Retriever:
         return results
 
     # ============================================================
-    # 阶段2: LLM增强检索方法
+     #  LLM增强检索方法
     # ============================================================
 
     def _rewrite_query(self, query: str) -> str:
@@ -413,6 +420,314 @@ class Retriever:
 
         return merged[:top_k * 2]  # 返回更多结果供后续过滤
 
+    # ============================================================
+    # Rerank精排序方法（阶段3）
+    # ============================================================
+
+    def _load_reranker(self):
+        """
+        延迟加载 Rerank 模型
+
+        返回:
+            CrossEncoder - 重排序模型实例
+        """
+        if not hasattr(self, '_reranker'):
+            from sentence_transformers import CrossEncoder
+            logger.info(f"加载 Rerank 模型: {RERANK_MODEL}")
+            self._reranker = CrossEncoder(RERANK_MODEL)
+            logger.info("✓ Rerank 模型加载完成")
+        return self._reranker
+
+    def _rerank_results(
+        self,
+        query: str,
+        results: List[Dict],
+        top_k: int = None
+    ) -> List[Dict]:
+        """
+        使用 Cross-Encoder 重排序检索结果
+
+        Cross-Encoder 与 Bi-Encoder 的区别：
+        - Bi-Encoder: 查询和文档分别编码，快速但精度较低（用于粗排）
+        - Cross-Encoder: 查询和文档一起编码，慢但精度高（用于精排）
+
+        参数:
+            query: str - 用户查询
+            results: List[Dict] - 初步检索结果（粗排）
+            top_k: int - 最终返回数量
+
+        返回:
+            List[Dict] - 重排序后的结果列表
+        """
+        if not results:
+            return results
+
+        if top_k is None:
+            top_k = TOP_K_RESULTS
+
+        try:
+            # 加载模型
+            reranker = self._load_reranker()
+
+            # 准备输入对 [query, document]
+            pairs = [[query, r['document']] for r in results]
+
+            # 重新打分（分数越高越相关）
+            scores = reranker.predict(pairs)
+
+            # 添加 rerank_score 到结果
+            for i, result in enumerate(results):
+                result['rerank_score'] = float(scores[i])
+
+            # 按 rerank_score 降序排序
+            reranked = sorted(results, key=lambda x: x['rerank_score'], reverse=True)
+
+            logger.info(f"Rerank: {len(results)} 个候选 -> Top-{top_k}")
+
+            return reranked[:top_k]
+
+        except Exception as e:
+            logger.error(f"Rerank 失败: {e}，返回原结果")
+            return results[:top_k]
+
+    # ============================================================
+    # Hybrid混合检索方法
+    # ============================================================
+
+    def _build_bm25_index(self):
+        """
+        构建 BM25 索引（延迟加载）
+
+        使用 jieba 进行中文分词，构建 BM25 索引用于关键词检索
+
+        返回:
+            BM25Okapi - BM25 索引实例
+        """
+        if not hasattr(self, '_bm25_index'):
+            try:
+                import jieba
+                from rank_bm25 import BM25Okapi
+
+                logger.info("构建 BM25 索引...")
+
+                # 获取所有文档
+                all_docs = self.vectordb.collection.get()
+                documents = all_docs['documents']
+
+                if not documents:
+                    logger.warning("没有文档可用于构建 BM25 索引")
+                    self._bm25_index = None
+                    self._bm25_docs = []
+                    self._bm25_metadatas = []
+                    self._bm25_ids = []
+                    return None
+
+                # 保存文档元数据（用于返回结果）
+                self._bm25_docs = documents
+                self._bm25_metadatas = all_docs.get('metadatas', [])
+                self._bm25_ids = all_docs.get('ids', [])
+
+                # 中文分词
+                tokenized_docs = []
+                for doc in documents:
+                    # 使用 jieba 分词
+                    tokens = list(jieba.cut_for_search(doc))
+                    tokenized_docs.append(tokens)
+
+                # 构建 BM25 索引
+                self._bm25_index = BM25Okapi(tokenized_docs)
+
+                logger.info(f"✓ BM25 索引构建完成（{len(documents)} 个文档）")
+
+            except Exception as e:
+                logger.error(f"构建 BM25 索引失败: {e}")
+                self._bm25_index = None
+                self._bm25_docs = []
+                self._bm25_metadatas = []
+                self._bm25_ids = []
+
+        return self._bm25_index
+
+    def _bm25_search(self, query: str, top_k: int = None) -> List[Dict]:
+        """
+        使用 BM25 进行关键词检索
+
+        参数:
+            query: str - 用户查询
+            top_k: int - 返回结果数量
+
+        返回:
+            List[Dict] - BM25 检索结果列表，每个结果包含：
+                - document: str - 文档内容
+                - metadata: Dict - 文档元数据
+                - bm25_score: float - BM25 分数（分数越高越相关）
+                - id: str - 文档ID
+        """
+        if top_k is None:
+            top_k = TOP_K_RESULTS
+
+        # 构建或获取 BM25 索引
+        bm25_index = self._build_bm25_index()
+
+        if bm25_index is None:
+            logger.warning("BM25 索引不可用，返回空结果")
+            return []
+
+        try:
+            import jieba
+
+            # 查询分词
+            query_tokens = list(jieba.cut_for_search(query))
+
+            # BM25 检索
+            scores = bm25_index.get_scores(query_tokens)
+
+            # 获取 top_k 个结果的索引
+            top_indices = scores.argsort()[-top_k:][::-1]
+
+            # 构建结果
+            results = []
+            for idx in top_indices:
+                if scores[idx] > 0:  # 只返回有分数的结果
+                    result = {
+                        'document': self._bm25_docs[idx],
+                        'metadata': self._bm25_metadatas[idx] if idx < len(self._bm25_metadatas) else {},
+                        'bm25_score': float(scores[idx]),
+                        'id': self._bm25_ids[idx] if idx < len(self._bm25_ids) else f"doc_{idx}"
+                    }
+                    results.append(result)
+
+            logger.info(f"BM25 检索: {len(results)} 个结果")
+
+            return results
+
+        except Exception as e:
+            logger.error(f"BM25 检索失败: {e}")
+            return []
+
+    def _hybrid_search(
+        self,
+        query: str,
+        top_k: int = None,
+        bm25_weight: float = None,
+        vector_weight: float = None,
+        mode: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        混合检索：结合向量检索和 BM25 关键词检索
+
+        原理：
+        1. 向量检索：捕捉语义相似性（理解意图）
+        2. BM25 检索：捕捉关键词匹配（精确匹配）
+        3. 加权融合：综合两者优势
+
+        参数:
+            query: str - 用户查询
+            top_k: int - 最终返回数量
+            bm25_weight: float - BM25 权重（默认 0.3）
+            vector_weight: float - 向量权重（默认 0.7）
+            mode: str - 检索模式
+
+        返回:
+            List[Dict] - 混合检索结果列表
+        """
+        if top_k is None:
+            top_k = TOP_K_RESULTS
+        if bm25_weight is None:
+            bm25_weight = BM25_WEIGHT
+        if vector_weight is None:
+            vector_weight = VECTOR_WEIGHT
+        if mode is None:
+            mode = RETRIEVAL_MODE
+
+        # 获取更多候选（用于融合）
+        candidate_k = max(HYBRID_TOP_K, top_k * 2)
+
+        # Step 1: 向量检索
+        # 根据mode确定分类
+        category_filter = None
+        if mode == "keyword":
+            category_filter = self._classify_query_by_keywords(query)
+        elif mode == "metadata_only":
+            category_filter = self._extract_category_from_query(query)
+
+        vector_results = self.retrieve(
+            query,
+            top_k=candidate_k,
+            category_filter=category_filter
+        )
+
+        # Step 2: BM25 检索
+        bm25_results = self._bm25_search(query, top_k=candidate_k)
+
+        # Step 3: 归一化分数并融合
+        # 归一化向量检索分数（距离转为相似度，范围 0-1）
+        vector_scores = {}
+        if vector_results:
+            max_distance = max([r.get('distance', 0) for r in vector_results])
+            min_distance = min([r.get('distance', 0) for r in vector_results])
+            distance_range = max_distance - min_distance if max_distance > min_distance else 1.0
+
+            for r in vector_results:
+                doc_id = r.get('id', r['document'][:50])
+                distance = r.get('distance', 0)
+                # 距离越小，分数越高
+                normalized_score = 1.0 - ((distance - min_distance) / distance_range)
+                vector_scores[doc_id] = normalized_score
+
+        # 归一化 BM25 分数（范围 0-1）
+        bm25_scores = {}
+        if bm25_results:
+            max_bm25 = max([r.get('bm25_score', 0) for r in bm25_results])
+
+            for r in bm25_results:
+                doc_id = r.get('id', r['document'][:50])
+                bm25_score = r.get('bm25_score', 0)
+                normalized_score = bm25_score / max_bm25 if max_bm25 > 0 else 0
+                bm25_scores[doc_id] = normalized_score
+
+        # Step 4: 加权融合
+        # 收集所有文档
+        all_docs = {}
+        for r in vector_results:
+            doc_id = r.get('id', r['document'][:50])
+            all_docs[doc_id] = r
+
+        for r in bm25_results:
+            doc_id = r.get('id', r['document'][:50])
+            if doc_id not in all_docs:
+                all_docs[doc_id] = r
+
+        # 计算混合分数
+        hybrid_results = []
+        for doc_id, doc_data in all_docs.items():
+            v_score = vector_scores.get(doc_id, 0.0)
+            b_score = bm25_scores.get(doc_id, 0.0)
+
+            # 加权混合
+            hybrid_score = (vector_weight * v_score) + (bm25_weight * b_score)
+
+            result = {
+                'document': doc_data['document'],
+                'metadata': doc_data['metadata'],
+                'id': doc_id,
+                'hybrid_score': hybrid_score,
+                'vector_score': v_score,
+                'bm25_score': b_score,
+                'distance': doc_data.get('distance')  # 保留原始距离
+            }
+            hybrid_results.append(result)
+
+        # 按混合分数排序
+        hybrid_results = sorted(hybrid_results, key=lambda x: x['hybrid_score'], reverse=True)
+
+        logger.info(
+            f"Hybrid 检索: {len(vector_results)} 个向量结果 + {len(bm25_results)} 个BM25结果 "
+            f"-> {len(hybrid_results)} 个融合结果 (权重: Vector={vector_weight}, BM25={bm25_weight})"
+        )
+
+        return hybrid_results[:top_k]
+
     def retrieve_advanced(
         self,
         query: str,
@@ -420,16 +735,20 @@ class Retriever:
         enable_rewrite: bool = None,
         enable_multi_query: bool = None,
         enable_threshold: bool = None,
+        enable_rerank: bool = None,
+        enable_hybrid: bool = None,
         mode: Optional[str] = None
     ) -> Dict:
         """
-        高级检索（阶段2完整功能）
+        高级检索（阶段2完整功能 + 阶段3 Rerank + Hybrid）
 
         集成以下功能：
         1. Query Rewrite - LLM 优化查询
         2. Multi-Query Expansion - 多查询变体扩展
         3. 智能分类 - 基于模式的分类检索
         4. 阈值过滤 - 基于距离的质量过滤
+        5. Rerank 精排序 - Cross-Encoder 重排序（阶段3）
+        6. Hybrid 混合检索 - 向量 + BM25 融合（阶段3 Part 2）
 
         参数:
             query: str - 原始用户查询
@@ -437,6 +756,8 @@ class Retriever:
             enable_rewrite: bool - 是否启用查询重写（默认使用配置）
             enable_multi_query: bool - 是否启用多查询扩展（默认使用配置）
             enable_threshold: bool - 是否启用阈值过滤（默认使用配置）
+            enable_rerank: bool - 是否启用 Rerank 精排序（默认使用配置）
+            enable_hybrid: bool - 是否启用 Hybrid 混合检索（默认使用配置）
             mode: str - 检索模式（默认使用配置）
 
         返回:
@@ -456,6 +777,10 @@ class Retriever:
             enable_multi_query = ENABLE_MULTI_QUERY
         if enable_threshold is None:
             enable_threshold = ENABLE_THRESHOLD_FILTERING
+        if enable_rerank is None:
+            enable_rerank = ENABLE_RERANK
+        if enable_hybrid is None:
+            enable_hybrid = ENABLE_HYBRID
         if mode is None:
             mode = RETRIEVAL_MODE
 
@@ -464,6 +789,8 @@ class Retriever:
             "rewrite_enabled": enable_rewrite,
             "multi_query_enabled": enable_multi_query,
             "threshold_enabled": enable_threshold,
+            "rerank_enabled": enable_rerank,
+            "hybrid_enabled": enable_hybrid,
             "mode": mode
         }
 
@@ -498,14 +825,23 @@ class Retriever:
 
         stats["category_filter"] = category
 
-        # Step 4: 执行检索
-        if len(queries_to_search) > 1:
+        # Step 4: 执行检索（支持 Hybrid）
+        if enable_hybrid:
+            # 使用 Hybrid 混合检索（不支持multi-query，直接使用单查询）
+            results = self._hybrid_search(
+                working_query,  # 使用重写后的查询
+                top_k=top_k * 2,  # 获取更多候选
+                mode=mode
+            )
+            stats["retrieval_method"] = "hybrid"
+        elif len(queries_to_search) > 1:
             # 多查询检索
             results = self._retrieve_multi_query(
                 queries_to_search,
                 top_k=top_k,
                 category_filter=category
             )
+            stats["retrieval_method"] = "multi_query"
         else:
             # 单查询检索
             results = self.retrieve(
@@ -513,6 +849,7 @@ class Retriever:
                 top_k=top_k * 2,  # 获取更多以便过滤
                 category_filter=category
             )
+            stats["retrieval_method"] = "vector_only"
 
         stats["raw_results_count"] = len(results)
 
@@ -531,6 +868,17 @@ class Retriever:
 
             results = filtered
             stats["filtered_results_count"] = len(results)
+
+        # Step 6: Rerank 精排序（阶段3）
+        if enable_rerank:
+            # 获取更多候选用于精排
+            candidate_k = min(RERANK_TOP_K, len(results))
+            if candidate_k > 0:
+                rerank_candidates = results[:candidate_k]
+                results = self._rerank_results(query, rerank_candidates, top_k=top_k)
+                stats["rerank_candidates"] = candidate_k
+            else:
+                stats["rerank_candidates"] = 0
 
         # 限制返回数量
         final_results = results[:top_k]

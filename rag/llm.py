@@ -67,7 +67,7 @@ class LLMClient:
         else:
             raise ValueError(f"不支持的 LLM 提供商: {self.provider}")
 
-        print(f"✓ LLM 客户端初始化完成")
+        print(f"[OK] LLM 客户端初始化完成")
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None,
                  temperature: Optional[float] = None,

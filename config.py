@@ -76,11 +76,26 @@ ENABLE_THRESHOLD_FILTERING = get_bool("ENABLE_THRESHOLD_FILTERING", True)
 ENABLE_AUTO_CLASSIFICATION = get_bool("ENABLE_AUTO_CLASSIFICATION", True)
 
 # ============================================================
-# 阶段2: LLM增强检索配置
+# LLM增强检索配置（阶段2）
 # ============================================================
 ENABLE_QUERY_REWRITE = get_bool("ENABLE_QUERY_REWRITE", False)
 ENABLE_MULTI_QUERY = get_bool("ENABLE_MULTI_QUERY", False)
 NUM_EXPANDED_QUERIES = get_int("NUM_EXPANDED_QUERIES", 3)
+
+# ============================================================
+# Rerank精排序配置（阶段3）
+# ============================================================
+ENABLE_RERANK = get_bool("ENABLE_RERANK", False)
+RERANK_TOP_K = get_int("RERANK_TOP_K", 20)  # 粗排候选数
+RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+# ============================================================
+# Hybrid混合检索配置（阶段3 Part 2）
+# ============================================================
+ENABLE_HYBRID = get_bool("ENABLE_HYBRID", False)
+BM25_WEIGHT = get_float("BM25_WEIGHT", 0.3)      # BM25权重
+VECTOR_WEIGHT = get_float("VECTOR_WEIGHT", 0.7)  # 向量检索权重
+HYBRID_TOP_K = get_int("HYBRID_TOP_K", 20)       # Hybrid检索候选数
 
 # Query Rewrite 提示词模板
 QUERY_REWRITE_PROMPT = """请将以下用户查询重写为更适合向量检索的形式。

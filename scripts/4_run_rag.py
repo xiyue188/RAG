@@ -1,7 +1,7 @@
 """
 脚本4: 完整 RAG 流程
 只调用 rag 模块，不包含逻辑
-默认使用高级检索（阶段2）
+默认使用高级检索（阶段2 + 阶段3 Rerank + Hybrid）
 """
 
 import sys
@@ -51,7 +51,7 @@ def main():
 
     # 3. 初始化检索器（传入 LLM 以支持高级检索）
     retriever = Retriever(vectordb, embedder, llm=llm)
-    print("高级检索已启用（Query Rewrite + Multi-Query）")
+    print("高级检索已启用（Query Rewrite + Multi-Query + Rerank + Hybrid）")
 
     # 4. 交互式问答
     print("\n" + "=" * 70)
@@ -81,13 +81,25 @@ def main():
             continue
 
         if question.lower() == 'status':
-            from config import RETRIEVAL_MODE
+            from config import (
+                RETRIEVAL_MODE,
+                ENABLE_QUERY_REWRITE,
+                ENABLE_MULTI_QUERY,
+                ENABLE_RERANK,
+                ENABLE_HYBRID,
+                BM25_WEIGHT,
+                VECTOR_WEIGHT
+            )
             print(f"\n状态:")
             print(f"  文档总数: {vectordb.count()}")
             print(f"  检索模式: {RETRIEVAL_MODE}")
             print(f"  高级检索: 已启用")
-            print(f"    - Query Rewrite: 启用")
-            print(f"    - Multi-Query: 启用")
+            print(f"    - Query Rewrite: {'启用' if ENABLE_QUERY_REWRITE else '禁用'}")
+            print(f"    - Multi-Query: {'启用' if ENABLE_MULTI_QUERY else '禁用'}")
+            print(f"    - Rerank精排: {'启用' if ENABLE_RERANK else '禁用'}")
+            print(f"    - Hybrid混合: {'启用' if ENABLE_HYBRID else '禁用'}")
+            if ENABLE_HYBRID:
+                print(f"      权重: Vector={VECTOR_WEIGHT}, BM25={BM25_WEIGHT}")
             continue
 
         if question.lower() == 'categories':
@@ -99,17 +111,20 @@ def main():
                 print("\n数据库中暂无文档")
             continue
 
-        # RAG 流程 - 始终使用高级检索
+        # RAG 流程 - 使用完整高级检索（阶段2 + 阶段3）
         print("\n检索中...")
 
         advanced_result = retriever.retrieve_advanced(
             question,
             top_k=3,
             enable_rewrite=True,
-            enable_multi_query=True
+            enable_multi_query=True,
+            enable_rerank=True,
+            enable_hybrid=True
         )
 
         results = advanced_result['results']
+        stats = advanced_result['stats']
 
         # 显示高级检索信息
         if advanced_result['rewritten_query'] and advanced_result['rewritten_query'] != question:
@@ -117,18 +132,32 @@ def main():
             print(f"         -> '{advanced_result['rewritten_query']}'")
         if advanced_result['expanded_queries']:
             print(f"  扩展查询: {len(advanced_result['expanded_queries'])} 个变体")
+        if stats.get('retrieval_method'):
+            method_names = {
+                'hybrid': 'Hybrid混合检索',
+                'multi_query': '多查询检索',
+                'vector_only': '向量检索'
+            }
+            print(f"  检索方法: {method_names.get(stats['retrieval_method'], stats['retrieval_method'])}")
+        if stats.get('rerank_enabled') and stats.get('rerank_candidates', 0) > 0:
+            print(f"  Rerank精排: {stats['rerank_candidates']} 个候选")
 
         # 显示检索结果
         if results:
             print(f"找到 {len(results)} 个相关文档:")
             for i, result in enumerate(results, 1):
                 meta = result['metadata']
-                distance = result.get('distance', 'N/A')
-                if isinstance(distance, float):
-                    print(f"  {i}. {meta.get('category', 'unknown')}/{meta.get('file', 'unknown')} "
-                          f"(距离: {distance:.3f})")
-                else:
-                    print(f"  {i}. {meta.get('category', 'unknown')}/{meta.get('file', 'unknown')}")
+                # 显示分数信息
+                score_info = []
+                if 'hybrid_score' in result:
+                    score_info.append(f"混合={result['hybrid_score']:.3f}")
+                if 'rerank_score' in result:
+                    score_info.append(f"精排={result['rerank_score']:.3f}")
+                elif 'distance' in result:
+                    score_info.append(f"距离={result['distance']:.3f}")
+
+                score_str = f" ({', '.join(score_info)})" if score_info else ""
+                print(f"  {i}. {meta.get('category', 'unknown')}/{meta.get('file', 'unknown')}{score_str}")
         else:
             print("未找到相关文档")
 
