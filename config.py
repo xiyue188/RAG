@@ -97,6 +97,13 @@ BM25_WEIGHT = get_float("BM25_WEIGHT", 0.3)      # BM25权重
 VECTOR_WEIGHT = get_float("VECTOR_WEIGHT", 0.7)  # 向量检索权重
 HYBRID_TOP_K = get_int("HYBRID_TOP_K", 20)       # Hybrid检索候选数
 
+# ============================================================
+# 对话管理配置（Phase 1）
+# ============================================================
+MAX_CONVERSATION_TURNS = get_int("MAX_CONVERSATION_TURNS", 20)  # 最大保留对话轮次
+ENABLE_REFERENCE_RESOLUTION = get_bool("ENABLE_REFERENCE_RESOLUTION", True)  # 启用指代消解
+ENABLE_CONTEXT_AWARE_REWRITE = get_bool("ENABLE_CONTEXT_AWARE_REWRITE", True)  # 启用上下文感知查询重写
+
 # Query Rewrite 提示词模板
 QUERY_REWRITE_PROMPT = """请将以下用户查询重写为更适合向量检索的形式。
 要求：

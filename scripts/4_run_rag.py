@@ -1,7 +1,7 @@
 """
 脚本4: 完整 RAG 流程
 只调用 rag 模块，不包含逻辑
-默认使用高级检索（阶段2 + 阶段3 Rerank + Hybrid）
+默认使用高级检索（阶段2 + 阶段3 Rerank + Hybrid + Phase 1 对话管理）
 """
 
 import sys
@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from rag import Retriever, LLMClient, VectorDB, Embedder
+from rag.conversation import ConversationManager, ReferenceResolver
 from dotenv import load_dotenv
 
 
@@ -53,13 +54,20 @@ def main():
     retriever = Retriever(vectordb, embedder, llm=llm)
     print("高级检索已启用（Query Rewrite + Multi-Query + Rerank + Hybrid）")
 
-    # 4. 交互式问答
+    # 4. 初始化对话管理器（Phase 1）
+    conversation = ConversationManager(max_turns=20)
+    resolver = ReferenceResolver(conversation)
+    print("[OK] 对话管理已启用（支持多轮对话和指代消解）")
+
+    # 5. 交互式问答
     print("\n" + "=" * 70)
     print("RAG 问答系统已启动")
     print("=" * 70)
     print("\n命令:")
     print("  help    - 查看帮助")
     print("  status  - 查看状态")
+    print("  history - 查看对话历史")
+    print("  clear   - 清空对话历史")
     print("  quit    - 退出\n")
 
     while True:
@@ -77,6 +85,8 @@ def main():
             print("  help       - 显示帮助")
             print("  status     - 查看数据库和检索状态")
             print("  categories - 查看文档分类")
+            print("  history    - 查看对话历史")
+            print("  clear      - 清空对话历史")
             print("  quit       - 退出程序")
             continue
 
@@ -93,6 +103,7 @@ def main():
             print(f"\n状态:")
             print(f"  文档总数: {vectordb.count()}")
             print(f"  检索模式: {RETRIEVAL_MODE}")
+            print(f"  对话历史: {len(conversation)} 轮")
             print(f"  高级检索: 已启用")
             print(f"    - Query Rewrite: {'启用' if ENABLE_QUERY_REWRITE else '禁用'}")
             print(f"    - Multi-Query: {'启用' if ENABLE_MULTI_QUERY else '禁用'}")
@@ -111,16 +122,45 @@ def main():
                 print("\n数据库中暂无文档")
             continue
 
-        # RAG 流程 - 使用完整高级检索（阶段2 + 阶段3）
+        if question.lower() == 'history':
+            if len(conversation) == 0:
+                print("\n暂无对话历史")
+            else:
+                print(f"\n对话历史（共 {len(conversation)} 轮）:")
+                print("-" * 70)
+                for i, turn in enumerate(conversation.get_recent_turns(10), 1):
+                    role_label = "您" if turn.role == 'user' else "助手"
+                    content = turn.content[:80] + "..." if len(turn.content) > 80 else turn.content
+                    print(f"{i}. {role_label}: {content}")
+            continue
+
+        if question.lower() == 'clear':
+            conversation.clear()
+            print("\n[OK] 对话历史已清空")
+            continue
+
+        # 添加用户消息到历史
+        conversation.add_user_message(question)
+
+        # 指代消解
+        resolved_question = resolver.resolve(question)
+        if resolved_question != question:
+            print(f"  理解为: '{resolved_question}'")
+
+        # 获取对话上下文
+        conversation_context = conversation.get_context_for_llm(max_turns=4)
+
+        # RAG 流程 - 使用完整高级检索（阶段2 + 阶段3 + Phase 1）
         print("\n检索中...")
 
         advanced_result = retriever.retrieve_advanced(
-            question,
+            resolved_question,  # 使用消解后的查询
             top_k=3,
             enable_rewrite=True,
             enable_multi_query=True,
             enable_rerank=True,
-            enable_hybrid=True
+            enable_hybrid=True,
+            conversation_context=conversation_context  # 传入对话上下文
         )
 
         results = advanced_result['results']
@@ -173,6 +213,16 @@ def main():
             print(result['answer'])
             print("=" * 70)
             print(f"\n[{result['mode']} | {result['reason']}]")
+
+            # 添加助手回复到历史
+            sources = [
+                {
+                    'file': r['metadata'].get('file'),
+                    'category': r['metadata'].get('category')
+                }
+                for r in results
+            ]
+            conversation.add_assistant_message(result['answer'], sources)
 
         except Exception as e:
             print(f"\n生成答案失败: {e}")

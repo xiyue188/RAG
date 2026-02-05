@@ -307,12 +307,14 @@ class Retriever:
      #  LLM增强检索方法
     # ============================================================
 
-    def _rewrite_query(self, query: str) -> str:
+    def _rewrite_query(self, query: str, conversation_context: Optional[str] = None) -> str:
         """
         使用 LLM 重写查询以优化检索效果
+        支持上下文感知的查询重写（Phase 1新增）
 
         参数:
             query: str - 原始用户查询
+            conversation_context: Optional[str] - 对话上下文（可选）
 
         返回:
             str - 重写后的查询（如果 LLM 不可用则返回原查询）
@@ -322,7 +324,24 @@ class Retriever:
             return query
 
         try:
-            prompt = QUERY_REWRITE_PROMPT.format(query=query)
+            # 如果有上下文，使用上下文感知的重写提示
+            if conversation_context:
+                prompt = f"""{conversation_context}
+
+请基于上述对话历史，将以下用户查询重写为更明确的完整表达：
+原始查询：{query}
+
+要求：
+1. 如果查询包含代词（它、这个、那个），替换为具体实体
+2. 补充可能缺失的上下文信息
+3. 使用精确的关键词
+4. 只输出重写后的查询，不要解释
+
+重写后的查询："""
+            else:
+                # 使用原有的重写提示
+                prompt = QUERY_REWRITE_PROMPT.format(query=query)
+
             rewritten = self.llm.generate(prompt, max_tokens=100)
             rewritten = rewritten.strip()
 
@@ -737,13 +756,14 @@ class Retriever:
         enable_threshold: bool = None,
         enable_rerank: bool = None,
         enable_hybrid: bool = None,
-        mode: Optional[str] = None
+        mode: Optional[str] = None,
+        conversation_context: Optional[str] = None  # Phase 1新增
     ) -> Dict:
         """
-        高级检索（阶段2完整功能 + 阶段3 Rerank + Hybrid）
+        高级检索（阶段2完整功能 + 阶段3 Rerank + Hybrid + Phase 1对话上下文）
 
         集成以下功能：
-        1. Query Rewrite - LLM 优化查询
+        1. Query Rewrite - LLM 优化查询（支持上下文感知）
         2. Multi-Query Expansion - 多查询变体扩展
         3. 智能分类 - 基于模式的分类检索
         4. 阈值过滤 - 基于距离的质量过滤
@@ -759,6 +779,7 @@ class Retriever:
             enable_rerank: bool - 是否启用 Rerank 精排序（默认使用配置）
             enable_hybrid: bool - 是否启用 Hybrid 混合检索（默认使用配置）
             mode: str - 检索模式（默认使用配置）
+            conversation_context: Optional[str] - 对话上下文（Phase 1新增）
 
         返回:
             Dict - 包含以下字段：
@@ -794,12 +815,12 @@ class Retriever:
             "mode": mode
         }
 
-        # Step 1: Query Rewrite
+        # Step 1: Query Rewrite (支持上下文感知)
         rewritten_query = None
         working_query = query
 
         if enable_rewrite and self.llm is not None:
-            rewritten_query = self._rewrite_query(query)
+            rewritten_query = self._rewrite_query(query, conversation_context)
             working_query = rewritten_query
             stats["query_rewritten"] = (rewritten_query != query)
         else:
