@@ -104,17 +104,24 @@ MAX_CONVERSATION_TURNS = get_int("MAX_CONVERSATION_TURNS", 20)  # 最大保留�
 ENABLE_REFERENCE_RESOLUTION = get_bool("ENABLE_REFERENCE_RESOLUTION", True)  # 启用指代消解
 ENABLE_CONTEXT_AWARE_REWRITE = get_bool("ENABLE_CONTEXT_AWARE_REWRITE", True)  # 启用上下文感知查询重写
 
-# Query Rewrite 提示词模板
-QUERY_REWRITE_PROMPT = """请将以下用户查询重写为更适合向量检索的形式。
-要求：
-1. 保持原意，但使用更精确的关键词
-2. 去除口语化表达
-3. 补充可能的同义词或相关术语
-4. 只输出重写后的查询，不要解释
+# Query Rewrite 提示词模板（Phase 1 改进版：极度保守的重写策略）
+QUERY_REWRITE_PROMPT = """评估以下用户查询是否需要重写。
+
+🔴 关键原则 - 几乎不重写：
+1. **默认不变** - 如果查询清晰完整，直接返回原查询
+2. **仅在必要时重写** - 只有以下情况才重写：
+   - 包含明显拼写错误
+   - 语法严重不通顺
+   - 包含无意义的填充词（如"那个嗯啊"）
+3. **禁止优化** - 不要：
+   - 删除"什么是"、"请问"等疑问词（它们有助于语义理解）
+   - 添加公司名称、时间、范围等额外信息
+   - 改变原有关键词顺序
+   - "优化"或"改进"表达方式
 
 原始查询：{query}
 
-重写后的查询："""
+如果查询正常，直接返回原查询；否则仅修正明显错误："""
 
 # Multi-Query 提示词模板
 MULTI_QUERY_PROMPT = """请为以下查询生成 {n} 个不同角度的变体查询，用于提高检索召回率。
