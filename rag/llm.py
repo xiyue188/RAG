@@ -169,7 +169,8 @@ class LLMClient:
             raise Exception(f"API 调用失败: {response.message}")
 
     def answer_with_context(self, question: str, context: str,
-                            template: Optional[str] = None) -> str:
+                            template: Optional[str] = None,
+                            conversation_context: Optional[str] = None) -> str:
         """
         基于上下文回答问题（RAG 核心方法）
 
@@ -177,17 +178,30 @@ class LLMClient:
             question: str - 用户问题
             context: str - 检索到的上下文
             template: str - 提示词模板（可选）
+            conversation_context: str - 对话历史（可选）
 
         返回:
             str - LLM 生成的答案
         """
         template = template or QUERY_TEMPLATE
 
-        # 构建完整提示词
-        prompt = template.format(context=context, question=question)
+        # 如果有对话历史，在prompt中包含
+        if conversation_context:
+            # 在context前添加对话历史
+            full_prompt = f"""{conversation_context}
+
+当前查询的文档内容：
+{context}
+
+用户当前问题：{question}
+
+回答："""
+        else:
+            # 构建完整提示词
+            full_prompt = template.format(context=context, question=question)
 
         # 调用 LLM
-        answer = self.generate(prompt)
+        answer = self.generate(full_prompt)
 
         return answer
 
@@ -214,7 +228,8 @@ class LLMClient:
         return answer
 
     def answer_smart(self, question: str, retrieval_results: List[Dict],
-                    threshold: Optional[float] = None) -> Dict:
+                    threshold: Optional[float] = None,
+                    conversation_context: Optional[str] = None) -> Dict:
         """
         智能回答（基于检索置信度自动分流）
 
@@ -222,6 +237,7 @@ class LLMClient:
             question: str - 用户问题
             retrieval_results: List[Dict] - 检索结果列表
             threshold: float - 相似度阈值（可选，默认使用配置）
+            conversation_context: str - 对话上下文（可选）
 
         返回:
             Dict - 包含答案和元信息:
@@ -265,7 +281,7 @@ class LLMClient:
                     relevant_count += 1
 
             context = "\n".join(context_parts)
-            answer = self.answer_with_context(question, context)
+            answer = self.answer_with_context(question, context, conversation_context=conversation_context)
 
             return {
                 'answer': answer,

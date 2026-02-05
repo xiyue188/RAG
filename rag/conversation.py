@@ -10,7 +10,7 @@
 
 from typing import List, Dict, Optional, Any
 from datetime import datetime
-import json
+import json 
 import logging
 
 logger = logging.getLogger(__name__)
@@ -165,20 +165,128 @@ class ConversationManager:
 
     def extract_entities(self) -> List[str]:
         """
-        从历史对话中提取关键实体
-        用于指代消解
+        从用户的历史问题中提取主题实体（使用词性标注 + 复合名词识别）
+
+        改进（Phase 1 优化 v3）：
+        1. 使用 jieba 词性标注，只提取名词
+        2. 合并连续的名词为复合名词（如"宠物"+"政策" → "宠物政策"）
+        3. 过滤动词、形容词、疑问词等
+        4. 优先保留复合名词
+        5. 添加详细日志便于调试
+
+        返回:
+            List[str] - 提取的实体列表（最多5个）
         """
+        try:
+            import jieba.posseg as pseg
+        except ImportError:
+            logger.warning("jieba.posseg not available, falling back to simple extraction")
+            return self._extract_entities_simple()
+
+        entities = []
+
+        # 只看最近的3轮用户问题（6条消息）
+        user_turns = [turn for turn in reversed(self.history[-6:]) if turn.role == 'user']
+
+        for turn in user_turns:
+            content = turn.content
+
+            # 使用词性标注分词
+            words = list(pseg.cut(content))
+
+            # 合并连续的词为复合名词（支持形容词+名词、动词+名词）
+            i = 0
+            while i < len(words):
+                word, flag = words[i]
+
+                # 检查是否可以作为复合名词的起始
+                # 支持：形容词(a)、动词(v)、名词(n/nr/ns/nt/nz/vn/an)
+                if flag in ['n', 'nr', 'ns', 'nt', 'nz', 'vn', 'an', 'a', 'v']:
+                    # 开始构建复合名词
+                    compound = word
+                    compound_flags = [flag]
+                    j = i + 1
+
+                    # 尝试合并后续的名词
+                    while j < len(words):
+                        next_word, next_flag = words[j]
+                        # 后续词必须是名词
+                        if next_flag in ['n', 'nr', 'ns', 'nt', 'nz', 'vn', 'an']:
+                            compound += next_word
+                            compound_flags.append(next_flag)
+                            j += 1
+                        else:
+                            break
+
+                    # 验证复合名词的合法性
+                    # 1. 如果只有一个词，必须是名词（过滤单独的形容词/动词）
+                    # 2. 如果多个词，最后一个必须是名词
+                    is_valid = False
+                    if j == i + 1:  # 单个词
+                        if flag in ['n', 'nr', 'ns', 'nt', 'nz', 'vn', 'an']:
+                            is_valid = True
+                    else:  # 复合词
+                        # 确保最后一个词是名词
+                        if compound_flags[-1] in ['n', 'nr', 'ns', 'nt', 'nz', 'vn', 'an']:
+                            is_valid = True
+
+                    # 长度要求：2-8字
+                    if is_valid and 2 <= len(compound) <= 8:
+                        # 过滤掉疑问词、代词、通用动词/形容词
+                        stop_words = {
+                            '什么', '哪些', '如何', '怎么', '怎样', '为什么', '为何',
+                            '它', '他', '她', '这个', '那个', '这些', '那些',
+                            '评价', '改进', '优点', '缺点', '问题', '办法', '方法',
+                            '东西', '事情', '地方', '时候', '方面', '情况'
+                        }
+
+                        if compound not in stop_words and compound not in entities:
+                            entities.append(compound)
+                            if j > i + 1:
+                                logger.debug(f"[实体提取] 复合名词: '{compound}' (合并了 {j-i} 个词, 词性: {'+'.join(compound_flags)})")
+                            else:
+                                logger.debug(f"[实体提取] 单一名词: '{compound}' (词性: {flag})")
+
+                    # 跳过已经处理的词
+                    i = j
+                else:
+                    i += 1
+
+        # 返回最多5个实体（最近提到的）
+        result = entities[:5]
+        if result:
+            logger.info(f"[实体提取] 从 {len(user_turns)} 轮对话中提取: {result}")
+        else:
+            logger.debug("[实体提取] 未提取到任何实体")
+
+        return result
+
+    def _extract_entities_simple(self) -> List[str]:
+        """简单实体提取（不使用词性标注）- 回退方法"""
         entities = []
 
         for turn in reversed(self.history):
             if turn.role == 'user':
-                words = turn.content.split()
+                content = turn.content
+
+                # 移除疑问词和标点
+                for word in ['什么是', '请问', '如何', '怎么', '怎样', '吗', '呢', '啊', '吧', '？', '?', '！', '!', '。', '，', ',']:
+                    content = content.replace(word, ' ')
+
+                content = content.strip()
+                if not content:
+                    continue
+
+                import re
+                words = re.split(r'\s+', content)
+
                 for word in words:
-                    if len(word) > 2 and word.isalnum():
+                    word = word.strip()
+                    if 2 <= len(word) <= 6 and word not in ['的', '了', '着', '过', '得', '地']:
                         if word not in entities:
                             entities.append(word)
 
-        return entities[:10]
+        return entities[:5]
 
     def _trim_history(self) -> None:
         """自动清理老旧对话"""
@@ -265,29 +373,42 @@ class ReferenceResolver:
         """
         消解查询中的代词
 
+        改进（Phase 1 优化 v2）：
+        - 使用词性标注优先选择名词实体
+        - 只替换第一个代词（避免过度替换）
+        - 优先选择复合名词和专有名词
+        - 添加详细日志便于调试
+
         示例:
             输入: "它还有什么要求？"
             历史: ["什么是宠物政策？"]
             输出: "宠物政策还有什么要求？"
         """
         if not self.has_pronoun(query):
+            logger.debug(f"[指代消解] 查询无代词，保持原样: '{query}'")
             return query
 
         entities = self.conversation.extract_entities()
         if not entities:
-            logger.debug("No entities found for reference resolution")
+            logger.warning(f"[指代消解] 失败：无法从历史中提取实体。查询: '{query}'")
             return query
+
+        # 选择最合适的实体（优先选择复合名词，即长度较长的）
+        # 例如：['宠物政策', '政策'] → 选择 '宠物政策'
+        best_entity = max(entities[:3], key=len)  # 从前3个中选最长的
 
         resolved_query = query
         replaced = []
 
+        # 替换代词（只替换第一个，避免过度替换）
         for pronoun in self.PRONOUNS:
-            if pronoun in resolved_query and entities:
-                entity = entities[0]
-                resolved_query = resolved_query.replace(pronoun, entity, 1)
-                replaced.append((pronoun, entity))
+            if pronoun in resolved_query:
+                resolved_query = resolved_query.replace(pronoun, best_entity, 1)
+                replaced.append((pronoun, best_entity))
+                logger.info(f"[指代消解] ✓ 成功: '{query}' -> '{resolved_query}' (替换: {pronoun} → {best_entity})")
+                break  # 只替换第一个代词
 
-        if replaced:
-            logger.info(f"Reference resolution: {replaced}")
+        if not replaced:
+            logger.debug(f"[指代消解] 查询包含代词但未能消解: '{query}'")
 
         return resolved_query

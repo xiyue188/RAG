@@ -16,10 +16,10 @@ from config import (
     ENABLE_AUTO_CLASSIFICATION,
     CATEGORY_KEYWORDS,
     RETRIEVAL_MODE,
-    ENABLE_QUERY_REWRITE,
+    # ENABLE_QUERY_REWRITE,  # 已删除（Phase 1 优化）
     ENABLE_MULTI_QUERY,
     NUM_EXPANDED_QUERIES,
-    QUERY_REWRITE_PROMPT,
+    # QUERY_REWRITE_PROMPT,  # 已删除（Phase 1 优化）
     MULTI_QUERY_PROMPT,
     ENABLE_RERANK,
     RERANK_TOP_K,
@@ -307,54 +307,10 @@ class Retriever:
      #  LLM增强检索方法
     # ============================================================
 
-    def _rewrite_query(self, query: str, conversation_context: Optional[str] = None) -> str:
-        """
-        使用 LLM 重写查询以优化检索效果
-        支持上下文感知的查询重写（Phase 1新增）
-
-        参数:
-            query: str - 原始用户查询
-            conversation_context: Optional[str] - 对话上下文（可选）
-
-        返回:
-            str - 重写后的查询（如果 LLM 不可用则返回原查询）
-        """
-        if self.llm is None:
-            logger.warning("LLM 未配置，跳过查询重写")
-            return query
-
-        try:
-            # 如果有上下文，使用上下文感知的重写提示
-            if conversation_context:
-                prompt = f"""{conversation_context}
-
-请基于上述对话历史，将以下用户查询重写为更明确的完整表达：
-原始查询：{query}
-
-要求：
-1. 如果查询包含代词（它、这个、那个），替换为具体实体
-2. 补充可能缺失的上下文信息
-3. 使用精确的关键词
-4. 只输出重写后的查询，不要解释
-
-重写后的查询："""
-            else:
-                # 使用原有的重写提示
-                prompt = QUERY_REWRITE_PROMPT.format(query=query)
-
-            rewritten = self.llm.generate(prompt, max_tokens=100)
-            rewritten = rewritten.strip()
-
-            if rewritten:
-                logger.info(f"查询重写: '{query}' -> '{rewritten}'")
-                return rewritten
-            else:
-                logger.warning("LLM 返回空结果，使用原查询")
-                return query
-
-        except Exception as e:
-            logger.error(f"查询重写失败: {e}")
-            return query
+    # Query Rewrite 已删除（Phase 1 优化：实测导致检索退化）
+    # 原因：LLM 重写查询会添加额外词汇，反而降低语义相似度
+    # 最佳实践：让向量模型直接理解自然查询
+   
 
     def _expand_queries(self, query: str, n: int = None) -> List[str]:
         """
@@ -751,49 +707,48 @@ class Retriever:
         self,
         query: str,
         top_k: int = None,
-        enable_rewrite: bool = None,
         enable_multi_query: bool = None,
         enable_threshold: bool = None,
         enable_rerank: bool = None,
         enable_hybrid: bool = None,
         mode: Optional[str] = None,
-        conversation_context: Optional[str] = None  # Phase 1新增
+        conversation_context: Optional[str] = None  # Phase 1: 保留用于指代消解
     ) -> Dict:
         """
-        高级检索（阶段2完整功能 + 阶段3 Rerank + Hybrid + Phase 1对话上下文）
+        高级检索（优化版：已移除 Query Rewrite）
 
         集成以下功能：
-        1. Query Rewrite - LLM 优化查询（支持上下文感知）
-        2. Multi-Query Expansion - 多查询变体扩展
-        3. 智能分类 - 基于模式的分类检索
-        4. 阈值过滤 - 基于距离的质量过滤
-        5. Rerank 精排序 - Cross-Encoder 重排序（阶段3）
-        6. Hybrid 混合检索 - 向量 + BM25 融合（阶段3 Part 2）
+        1. Multi-Query Expansion - 多查询变体扩展（提高召回率）
+        2. 智能分类 - 基于模式的分类检索
+        3. 阈值过滤 - 基于距离的质量过滤
+        4. Rerank 精排序 - Cross-Encoder 重排序
+        5. Hybrid 混合检索 - 向量 + BM25 融合
+
+        ⚠️ Phase 1 优化说明：
+        - 已删除 Query Rewrite（实测导致检索退化）
+        - conversation_context 保留用于应用层的指代消解
+        - 遵循 LangChain/LlamaIndex 最佳实践
 
         参数:
-            query: str - 原始用户查询
+            query: str - 原始用户查询（应在调用前完成指代消解）
             top_k: int - 返回结果数量
-            enable_rewrite: bool - 是否启用查询重写（默认使用配置）
             enable_multi_query: bool - 是否启用多查询扩展（默认使用配置）
             enable_threshold: bool - 是否启用阈值过滤（默认使用配置）
             enable_rerank: bool - 是否启用 Rerank 精排序（默认使用配置）
             enable_hybrid: bool - 是否启用 Hybrid 混合检索（默认使用配置）
             mode: str - 检索模式（默认使用配置）
-            conversation_context: Optional[str] - 对话上下文（Phase 1新增）
+            conversation_context: Optional[str] - 对话上下文（预留）
 
         返回:
             Dict - 包含以下字段：
                 - results: List[Dict] - 检索结果列表
                 - original_query: str - 原始查询
-                - rewritten_query: str | None - 重写后的查询
                 - expanded_queries: List[str] | None - 扩展的查询列表
                 - mode: str - 使用的检索模式
                 - stats: Dict - 统计信息
         """
         if top_k is None:
             top_k = TOP_K_RESULTS
-        if enable_rewrite is None:
-            enable_rewrite = ENABLE_QUERY_REWRITE
         if enable_multi_query is None:
             enable_multi_query = ENABLE_MULTI_QUERY
         if enable_threshold is None:
@@ -807,7 +762,6 @@ class Retriever:
 
         # 统计信息
         stats = {
-            "rewrite_enabled": enable_rewrite,
             "multi_query_enabled": enable_multi_query,
             "threshold_enabled": enable_threshold,
             "rerank_enabled": enable_rerank,
@@ -815,18 +769,10 @@ class Retriever:
             "mode": mode
         }
 
-        # Step 1: Query Rewrite (支持上下文感知)
-        rewritten_query = None
+        # Query Rewrite 已删除（优化说明见函数文档）
         working_query = query
 
-        if enable_rewrite and self.llm is not None:
-            rewritten_query = self._rewrite_query(query, conversation_context)
-            working_query = rewritten_query
-            stats["query_rewritten"] = (rewritten_query != query)
-        else:
-            stats["query_rewritten"] = False
-
-        # Step 2: Multi-Query Expansion
+        # Step 1: Multi-Query Expansion
         expanded_queries = None
         queries_to_search = [working_query]
 
@@ -908,7 +854,6 @@ class Retriever:
         return {
             "results": final_results,
             "original_query": query,
-            "rewritten_query": rewritten_query,
             "expanded_queries": expanded_queries,
             "mode": mode,
             "stats": stats

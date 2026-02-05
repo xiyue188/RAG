@@ -52,7 +52,7 @@ def main():
 
     # 3. 初始化检索器（传入 LLM 以支持高级检索）
     retriever = Retriever(vectordb, embedder, llm=llm)
-    print("高级检索已启用（Query Rewrite + Multi-Query + Rerank + Hybrid）")
+    print("高级检索已启用（Multi-Query + Rerank + Hybrid）")
 
     # 4. 初始化对话管理器（Phase 1）
     conversation = ConversationManager(max_turns=20)
@@ -93,7 +93,6 @@ def main():
         if question.lower() == 'status':
             from config import (
                 RETRIEVAL_MODE,
-                ENABLE_QUERY_REWRITE,
                 ENABLE_MULTI_QUERY,
                 ENABLE_RERANK,
                 ENABLE_HYBRID,
@@ -105,7 +104,6 @@ def main():
             print(f"  检索模式: {RETRIEVAL_MODE}")
             print(f"  对话历史: {len(conversation)} 轮")
             print(f"  高级检索: 已启用")
-            print(f"    - Query Rewrite: {'启用' if ENABLE_QUERY_REWRITE else '禁用'}")
             print(f"    - Multi-Query: {'启用' if ENABLE_MULTI_QUERY else '禁用'}")
             print(f"    - Rerank精排: {'启用' if ENABLE_RERANK else '禁用'}")
             print(f"    - Hybrid混合: {'启用' if ENABLE_HYBRID else '禁用'}")
@@ -139,13 +137,13 @@ def main():
             print("\n[OK] 对话历史已清空")
             continue
 
-        # 添加用户消息到历史
-        conversation.add_user_message(question)
-
         # 指代消解
         resolved_question = resolver.resolve(question)
         if resolved_question != question:
             print(f"  理解为: '{resolved_question}'")
+
+        # 添加用户消息到历史（使用消解后的查询）
+        conversation.add_user_message(resolved_question)
 
         # 获取对话上下文
         conversation_context = conversation.get_context_for_llm(max_turns=4)
@@ -155,8 +153,7 @@ def main():
 
         advanced_result = retriever.retrieve_advanced(
             resolved_question,  # 使用消解后的查询
-            top_k=3,
-            enable_rewrite=True,
+            top_k=5,  # 最终返回给LLM的文档数
             enable_multi_query=True,
             enable_rerank=True,
             enable_hybrid=True,
@@ -167,9 +164,7 @@ def main():
         stats = advanced_result['stats']
 
         # 显示高级检索信息
-        if advanced_result['rewritten_query'] and advanced_result['rewritten_query'] != question:
-            print(f"  查询优化: '{question}'")
-            print(f"         -> '{advanced_result['rewritten_query']}'")
+        # Query Rewrite 已删除（Phase 1 优化）
         if advanced_result['expanded_queries']:
             print(f"  扩展查询: {len(advanced_result['expanded_queries'])} 个变体")
         if stats.get('retrieval_method'):
@@ -205,7 +200,11 @@ def main():
         print("\n生成答案...")
 
         try:
-            result = llm.answer_smart(question, results)
+            result = llm.answer_smart(
+                question,
+                results,
+                conversation_context=conversation_context  # 传递对话上下文给LLM
+            )
 
             print("\n" + "=" * 70)
             print("回答:")
