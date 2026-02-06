@@ -50,8 +50,9 @@ class VectorDB:
             try:
                 self.client.delete_collection(name=self.collection_name)
                 print(f"✓ 已删除旧集合: {self.collection_name}")
-            except:
-                pass
+            except Exception as e:
+                # 集合不存在时会抛出异常，这是正常的
+                print(f"删除集合跳过（可能不存在）: {e}")
 
         self.collection = self.client.get_or_create_collection(
             name=self.collection_name,

@@ -404,13 +404,23 @@ class Retriever:
         延迟加载 Rerank 模型
 
         返回:
-            CrossEncoder - 重排序模型实例
+            CrossEncoder - 重排序模型实例，如果加载失败返回 None
         """
         if not hasattr(self, '_reranker'):
-            from sentence_transformers import CrossEncoder
-            logger.info(f"加载 Rerank 模型: {RERANK_MODEL}")
-            self._reranker = CrossEncoder(RERANK_MODEL)
-            logger.info("✓ Rerank 模型加载完成")
+            try:
+                from sentence_transformers import CrossEncoder
+                logger.info(f"加载 Rerank 模型: {RERANK_MODEL}")
+                self._reranker = CrossEncoder(RERANK_MODEL)
+                logger.info("✓ Rerank 模型加载完成")
+            except ImportError:
+                logger.warning(
+                    f"缺少依赖库 sentence-transformers，Rerank 重排序将不可用\n"
+                    f"如需使用 Rerank 功能，请运行: pip install sentence-transformers"
+                )
+                self._reranker = None
+            except Exception as e:
+                logger.error(f"Rerank 模型加载失败: {e}")
+                self._reranker = None
         return self._reranker
 
     def _rerank_results(
@@ -443,6 +453,11 @@ class Retriever:
         try:
             # 加载模型
             reranker = self._load_reranker()
+
+            # 如果 reranker 加载失败，返回原始结果
+            if reranker is None:
+                logger.warning("Rerank 模型未加载，跳过重排序")
+                return results[:top_k]
 
             # 准备输入对 [query, document]
             pairs = [[query, r['document']] for r in results]
@@ -514,6 +529,12 @@ class Retriever:
 
                 logger.info(f"✓ BM25 索引构建完成（{len(documents)} 个文档）")
 
+            except ImportError as e:
+                logger.warning(
+                    f"缺少依赖库 rank-bm25，Hybrid 混合检索将不可用\n"
+                    f"如需使用 Hybrid 检索，请运行: pip install rank-bm25"
+                )
+                self._bm25_index = None
             except Exception as e:
                 logger.error(f"构建 BM25 索引失败: {e}")
                 self._bm25_index = None
@@ -769,7 +790,8 @@ class Retriever:
             "mode": mode
         }
 
-        # Query Rewrite 已删除（优化说明见函数文档）
+        # Query Rewrite 已删除（Phase 1 优化）
+        # 使用原始查询进行后续处理
         working_query = query
 
         # Step 1: Multi-Query Expansion

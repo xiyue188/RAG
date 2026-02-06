@@ -5,7 +5,12 @@
 """
 
 import sys
+import io
 from pathlib import Path
+
+# 彻底解决 Windows GBK 编码问题
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # 添加项目根目录到路径
 sys.path.append(str(Path(__file__).parent.parent))
@@ -200,18 +205,30 @@ def main():
         print("\n生成答案...")
 
         try:
-            result = llm.answer_smart(
+            # 使用流式输出
+            stream = llm.answer_smart_stream(
                 question,
                 results,
                 conversation_context=conversation_context  # 传递对话上下文给LLM
             )
 
+            # 第一个 yield 是元信息
+            metadata = next(stream)
+
             print("\n" + "=" * 70)
             print("回答:")
             print("=" * 70)
-            print(result['answer'])
-            print("=" * 70)
-            print(f"\n[{result['mode']} | {result['reason']}]")
+
+            # 收集完整答案（用于保存到历史）
+            full_answer = ""
+
+            # 流式输出答案
+            for token in stream:
+                print(token, end='', flush=True)
+                full_answer += token
+
+            print("\n" + "=" * 70)
+            print(f"\n[{metadata['mode']} | {metadata['reason']}]")
 
             # 添加助手回复到历史
             sources = [
@@ -221,7 +238,7 @@ def main():
                 }
                 for r in results
             ]
-            conversation.add_assistant_message(result['answer'], sources)
+            conversation.add_assistant_message(full_answer, sources)
 
         except Exception as e:
             print(f"\n生成答案失败: {e}")

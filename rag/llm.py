@@ -12,7 +12,7 @@ from config import (
     LLM_TEMPERATURE, LLM_MAX_TOKENS, LLM_TIMEOUT, SIMILARITY_THRESHOLD,
     get_llm_config
 )
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Iterator
 import time
 
 
@@ -32,9 +32,47 @@ class LLMClient:
         self.provider = provider or LLM_PROVIDER
         self.config = get_llm_config()
 
+        # 验证配置和依赖
+        self._validate_config()
+
         # 根据提供商初始化客户端
         self.client = None
         self._init_client()
+
+    def _validate_config(self):
+        """验证配置和依赖"""
+        # 1. 验证 provider 是否支持
+        supported_providers = ["openai", "anthropic", "zhipu", "qwen"]
+        if self.provider not in supported_providers:
+            raise ValueError(
+                f"不支持的 LLM 提供商: {self.provider}\n"
+                f"支持的提供商: {', '.join(supported_providers)}"
+            )
+
+        # 2. 验证 API Key 是否存在
+        api_key = self.config.get("api_key")
+        if not api_key or api_key == "your-api-key-here":
+            raise ValueError(
+                f"未配置 API Key\n"
+                f"请在 .env 文件中设置 {self.provider.upper()}_API_KEY"
+            )
+
+        # 3. 验证依赖库是否已安装
+        dependency_map = {
+            "openai": "openai",
+            "anthropic": "anthropic",
+            "zhipu": "zhipuai",
+            "qwen": "dashscope"
+        }
+
+        required_package = dependency_map[self.provider]
+        try:
+            __import__(required_package)
+        except ImportError:
+            raise ImportError(
+                f"缺少依赖库: {required_package}\n"
+                f"请运行: pip install {required_package}"
+            )
 
     def _init_client(self):
         """初始化对应提供商的客户端"""
@@ -105,7 +143,47 @@ class LLMClient:
                 raise ValueError(f"不支持的提供商: {self.provider}")
 
         except Exception as e:
-            return f"[LLM 调用失败: {e}]"
+            print(f"[错误] LLM 调用失败: {e}")
+            raise  # 重新抛出异常，避免静默失败
+
+    def stream_generate(self, prompt: str, system_prompt: Optional[str] = None,
+                       temperature: Optional[float] = None,
+                       max_tokens: Optional[int] = None) -> Iterator[str]:
+        """
+        流式生成回复（实时输出）
+
+        参数:
+            prompt: str - 用户提示词
+            system_prompt: str - 系统提示词（可选）
+            temperature: float - 温度参数（可选）
+            max_tokens: int - 最大 token 数（可选）
+
+        返回:
+            Iterator[str] - 生成的文本流
+        """
+        system_prompt = system_prompt or SYSTEM_PROMPT
+        temperature = temperature if temperature is not None else LLM_TEMPERATURE
+        max_tokens = max_tokens if max_tokens is not None else LLM_MAX_TOKENS
+
+        try:
+            if self.provider == "openai":
+                yield from self._stream_openai(prompt, system_prompt, temperature, max_tokens)
+
+            elif self.provider == "anthropic":
+                yield from self._stream_anthropic(prompt, system_prompt, temperature, max_tokens)
+
+            elif self.provider == "zhipu":
+                yield from self._stream_zhipu(prompt, system_prompt, temperature, max_tokens)
+
+            elif self.provider == "qwen":
+                yield from self._stream_qwen(prompt, system_prompt, temperature, max_tokens)
+
+            else:
+                raise ValueError(f"不支持的提供商: {self.provider}")
+
+        except Exception as e:
+            print(f"[错误] LLM 流式调用失败: {e}")
+            raise
 
     def _generate_openai(self, prompt, system_prompt, temperature, max_tokens):
         """OpenAI API 调用"""
@@ -121,6 +199,24 @@ class LLMClient:
         )
         return response.choices[0].message.content
 
+    def _stream_openai(self, prompt, system_prompt, temperature, max_tokens):
+        """OpenAI API 流式调用"""
+        stream = self.client.chat.completions.create(
+            model=self.config["model"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=LLM_TIMEOUT,
+            stream=True
+        )
+
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
     def _generate_anthropic(self, prompt, system_prompt, temperature, max_tokens):
         """Anthropic Claude API 调用"""
         response = self.client.messages.create(
@@ -135,6 +231,21 @@ class LLMClient:
         )
         return response.content[0].text
 
+    def _stream_anthropic(self, prompt, system_prompt, temperature, max_tokens):
+        """Anthropic Claude API 流式调用"""
+        with self.client.messages.stream(
+            model=self.config["model"],
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": prompt}
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=LLM_TIMEOUT
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+
     def _generate_zhipu(self, prompt, system_prompt, temperature, max_tokens):
         """智谱AI API 调用"""
         response = self.client.chat.completions.create(
@@ -147,6 +258,23 @@ class LLMClient:
             max_tokens=max_tokens
         )
         return response.choices[0].message.content
+
+    def _stream_zhipu(self, prompt, system_prompt, temperature, max_tokens):
+        """智谱AI API 流式调用"""
+        response = self.client.chat.completions.create(
+            model=self.config["model"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True
+        )
+
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
 
     def _generate_qwen(self, prompt, system_prompt, temperature, max_tokens):
         """通义千问 API 调用"""
@@ -167,6 +295,30 @@ class LLMClient:
             return response.output.choices[0].message.content
         else:
             raise Exception(f"API 调用失败: {response.message}")
+
+    def _stream_qwen(self, prompt, system_prompt, temperature, max_tokens):
+        """通义千问 API 流式调用"""
+        from dashscope import Generation
+
+        responses = Generation.call(
+            model=self.config["model"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            result_format='message',
+            stream=True
+        )
+
+        for response in responses:
+            if response.status_code == 200:
+                # 获取增量内容
+                if response.output.choices[0].message.content:
+                    yield response.output.choices[0].message.content
+            else:
+                raise Exception(f"API 调用失败: {response.message}")
 
     def answer_with_context(self, question: str, context: str,
                             template: Optional[str] = None,
@@ -205,6 +357,40 @@ class LLMClient:
 
         return answer
 
+    def answer_with_context_stream(self, question: str, context: str,
+                                   template: Optional[str] = None,
+                                   conversation_context: Optional[str] = None) -> Iterator[str]:
+        """
+        基于上下文回答问题（RAG 核心方法 - 流式版本）
+
+        参数:
+            question: str - 用户问题
+            context: str - 检索到的上下文
+            template: str - 提示词模板（可选）
+            conversation_context: str - 对话历史（可选）
+
+        返回:
+            Iterator[str] - 生成的答案文本流
+        """
+        template = template or QUERY_TEMPLATE
+
+        # 如果有对话历史，在prompt中包含
+        if conversation_context:
+            full_prompt = f"""{conversation_context}
+
+当前查询的文档内容：
+{context}
+
+用户当前问题：{question}
+
+回答："""
+        else:
+            # 构建完整提示词
+            full_prompt = template.format(context=context, question=question)
+
+        # 流式调用 LLM
+        yield from self.stream_generate(full_prompt)
+
     def answer_without_context(self, question: str,
                                template: Optional[str] = None) -> str:
         """
@@ -226,6 +412,22 @@ class LLMClient:
         answer = self.generate(prompt)
 
         return answer
+
+    def answer_without_context_stream(self, question: str,
+                                      template: Optional[str] = None) -> Iterator[str]:
+        """
+        无上下文回答问题（使用 LLM 通用知识 - 流式版本）
+
+        参数:
+            question: str - 用户问题
+            template: str - 提示词模板（可选）
+
+        返回:
+            Iterator[str] - 生成的答案文本流
+        """
+        template = template or NO_CONTEXT_TEMPLATE
+        prompt = template.format(question=question)
+        yield from self.stream_generate(prompt)
 
     def answer_smart(self, question: str, retrieval_results: List[Dict],
                     threshold: Optional[float] = None,
@@ -300,6 +502,75 @@ class LLMClient:
                 'relevant_docs_count': 0,
                 'reason': f'文档相关度不足（{max_similarity:.3f} >= {threshold}）'
             }
+
+    def answer_smart_stream(self, question: str, retrieval_results: List[Dict],
+                           threshold: Optional[float] = None,
+                           conversation_context: Optional[str] = None):
+        """
+        智能回答（基于检索置信度自动分流 - 流式版本）
+
+        参数:
+            question: str - 用户问题
+            retrieval_results: List[Dict] - 检索结果列表
+            threshold: float - 相似度阈值（可选，默认使用配置）
+            conversation_context: str - 对话上下文（可选）
+
+        返回:
+            生成器 - 首先 yield 元信息字典，然后 yield 答案文本流
+        """
+        threshold = threshold if threshold is not None else SIMILARITY_THRESHOLD
+
+        # 检查是否有检索结果
+        if not retrieval_results:
+            # 先返回元信息
+            yield {
+                'mode': 'without_context',
+                'max_similarity': None,
+                'relevant_docs_count': 0,
+                'reason': '知识库中未找到相关文档'
+            }
+            # 然后流式返回答案
+            yield from self.answer_without_context_stream(question)
+            return
+
+        # 获取最相关文档的相似度
+        max_similarity = retrieval_results[0].get('distance', float('inf'))
+
+        # 根据阈值判断
+        if max_similarity < threshold:
+            # 有可靠文档，使用文档回答
+            context_parts = []
+            relevant_count = 0
+            for i, result in enumerate(retrieval_results, 1):
+                if result.get('distance', float('inf')) < threshold:
+                    meta = result['metadata']
+                    doc = result['document']
+                    context_parts.append(
+                        f"[文档 {i}] 来源: {meta.get('category', 'unknown')}/{meta.get('file', 'unknown')}\n"
+                        f"内容: {doc}\n"
+                    )
+                    relevant_count += 1
+
+            context = "\n".join(context_parts)
+
+            # 先返回元信息
+            yield {
+                'mode': 'with_context',
+                'max_similarity': max_similarity,
+                'relevant_docs_count': relevant_count,
+                'reason': f'找到 {relevant_count} 个相关文档（相似度 < {threshold}）'
+            }
+            # 然后流式返回答案
+            yield from self.answer_with_context_stream(question, context, conversation_context=conversation_context)
+        else:
+            # 没有可靠文档，使用通用知识
+            yield {
+                'mode': 'without_context',
+                'max_similarity': max_similarity,
+                'relevant_docs_count': 0,
+                'reason': f'文档相关度不足（{max_similarity:.3f} >= {threshold}）'
+            }
+            yield from self.answer_without_context_stream(question)
 
 
 
