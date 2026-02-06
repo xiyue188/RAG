@@ -10,6 +10,10 @@ sys.path.append(str(Path(__file__).parent.parent))
 from sentence_transformers import SentenceTransformer
 from config import EMBEDDING_MODEL_NAME, BATCH_SIZE
 from typing import List, Union
+from .logger import get_logger
+
+# 初始化logger
+logger = get_logger(__name__)
 
 
 class Embedder:
@@ -26,9 +30,9 @@ class Embedder:
             model_name: str - 模型名称，默认从 config 读取
         """
         self.model_name = model_name or EMBEDDING_MODEL_NAME
-        print(f"Loading Embedding model: {self.model_name}")
+        logger.info(f"加载 Embedding 模型: {self.model_name}")
         self.model = SentenceTransformer(self.model_name)
-        print(f"Model loaded successfully")
+        logger.info("Embedding 模型加载完成")
 
     def encode(self, texts: Union[str, List[str]], to_list=True, batch_size=None):
         """

@@ -14,6 +14,10 @@ from config import (
 )
 from typing import Optional, List, Dict, Iterator
 import time
+from .logger import get_logger
+
+# 初始化logger
+logger = get_logger(__name__)
 
 
 class LLMClient:
@@ -76,7 +80,7 @@ class LLMClient:
 
     def _init_client(self):
         """初始化对应提供商的客户端"""
-        print(f"初始化 LLM 客户端: {self.provider}")
+        logger.info(f"初始化 LLM 客户端: {self.provider}")
 
         if self.provider == "openai":
             from openai import OpenAI
@@ -105,7 +109,7 @@ class LLMClient:
         else:
             raise ValueError(f"不支持的 LLM 提供商: {self.provider}")
 
-        print(f"[OK] LLM 客户端初始化完成")
+        logger.info("LLM 客户端初始化完成")
 
     def generate(self, prompt: str, system_prompt: Optional[str] = None,
                  temperature: Optional[float] = None,
@@ -143,7 +147,7 @@ class LLMClient:
                 raise ValueError(f"不支持的提供商: {self.provider}")
 
         except Exception as e:
-            print(f"[错误] LLM 调用失败: {e}")
+            logger.error(f"LLM 调用失败: {e}", exc_info=True)
             raise  # 重新抛出异常，避免静默失败
 
     def stream_generate(self, prompt: str, system_prompt: Optional[str] = None,
@@ -182,7 +186,7 @@ class LLMClient:
                 raise ValueError(f"不支持的提供商: {self.provider}")
 
         except Exception as e:
-            print(f"[错误] LLM 流式调用失败: {e}")
+            logger.error(f"LLM 流式调用失败: {e}", exc_info=True)
             raise
 
     def _generate_openai(self, prompt, system_prompt, temperature, max_tokens):

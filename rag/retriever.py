@@ -30,12 +30,12 @@ from config import (
     HYBRID_TOP_K
 )
 from typing import List, Dict, Optional, TYPE_CHECKING
-import logging
+from .logger import get_logger
 
 if TYPE_CHECKING:
-    from .llm import LLMClient 
+    from .llm import LLMClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Retriever:

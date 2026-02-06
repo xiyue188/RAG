@@ -11,6 +11,10 @@ import chromadb
 from chromadb.config import Settings
 from config import CHROMA_DB_PATH, COLLECTION_NAME, SIMILARITY_METRIC
 from typing import List, Dict, Optional
+from .logger import get_logger
+
+# 初始化logger
+logger = get_logger(__name__)
 
 
 class VectorDB:
@@ -49,16 +53,16 @@ class VectorDB:
         if reset:
             try:
                 self.client.delete_collection(name=self.collection_name)
-                print(f"✓ 已删除旧集合: {self.collection_name}")
+                logger.info(f"已删除旧集合: {self.collection_name}")
             except Exception as e:
                 # 集合不存在时会抛出异常，这是正常的
-                print(f"删除集合跳过（可能不存在）: {e}")
+                logger.debug(f"删除集合跳过（可能不存在）: {e}")
 
         self.collection = self.client.get_or_create_collection(
             name=self.collection_name,
             metadata={"hnsw:space": SIMILARITY_METRIC}
         )
-        print(f"✓ 集合已创建/获取: {self.collection_name}")
+        logger.info(f"集合已创建/获取: {self.collection_name}")
         return self.collection
 
     def get_collection(self):
