@@ -102,7 +102,8 @@ def main():
                 ENABLE_RERANK,
                 ENABLE_HYBRID,
                 BM25_WEIGHT,
-                VECTOR_WEIGHT
+                VECTOR_WEIGHT,
+                ENABLE_CITATION_TRACKING
             )
             print(f"\n状态:")
             print(f"  文档总数: {vectordb.count()}")
@@ -114,6 +115,7 @@ def main():
             print(f"    - Hybrid混合: {'启用' if ENABLE_HYBRID else '禁用'}")
             if ENABLE_HYBRID:
                 print(f"      权重: Vector={VECTOR_WEIGHT}, BM25={BM25_WEIGHT}")
+            print(f"  引用追踪: {'启用' if ENABLE_CITATION_TRACKING else '禁用'}")
             continue
 
         if question.lower() == 'categories':
@@ -205,30 +207,106 @@ def main():
         print("\n生成答案...")
 
         try:
+            from config import ENABLE_CITATION_TRACKING
+            import re
+
             # 使用流式输出
-            stream = llm.answer_smart_stream(
-                question,
-                results,
-                conversation_context=conversation_context  # 传递对话上下文给LLM
-            )
+            if ENABLE_CITATION_TRACKING and results:
+                # 构建文档映射表（doc_1 -> 文件名）
+                doc_map = {
+                    f"doc_{i+1}": result['metadata'].get('file', 'unknown')
+                    for i, result in enumerate(results)
+                }
 
-            # 第一个 yield 是元信息
-            metadata = next(stream)
+                # 启用引用追踪模式
+                stream = llm.answer_with_citations_stream(
+                    question,
+                    results,
+                    conversation_context=conversation_context
+                )
 
-            print("\n" + "=" * 70)
-            print("回答:")
-            print("=" * 70)
+                # 第一个 yield 是元信息
+                metadata = next(stream)
 
-            # 收集完整答案（用于保存到历史）
-            full_answer = ""
+                print("\n" + "=" * 70)
+                print("回答（带来源标注）:")
+                print("=" * 70)
 
-            # 流式输出答案
-            for token in stream:
-                print(token, end='', flush=True)
-                full_answer += token
+                # 收集完整答案（用于保存到历史）
+                full_answer = ""
+                buffer = ""  # 用于累积token，检测完整的[doc_X]模式
 
-            print("\n" + "=" * 70)
-            print(f"\n[{metadata['mode']} | {metadata['reason']}]")
+                # 流式输出答案（实时替换内联引用标记）
+                for item in stream:
+                    if isinstance(item, dict) and item.get('type') == 'citation_meta':
+                        # 引用元信息（最后返回）
+                        # 先输出buffer中剩余内容
+                        if buffer:
+                            print(buffer, end='', flush=True)
+                            full_answer += buffer
+                            buffer = ""
+                        citation_meta = item
+                    else:
+                        # 文本token - 累积到buffer中
+                        buffer += item
+
+                        # 尝试匹配并替换完整的[doc_X]
+                        # 使用正则查找buffer中的[doc_X]
+                        match = re.search(r'\[doc_(\d+)\]', buffer)
+                        if match:
+                            # 找到完整的[doc_X]，进行替换
+                            doc_id = f"doc_{match.group(1)}"
+                            file_name = doc_map.get(doc_id, 'unknown')
+
+                            # 输出匹配前的内容 + 替换后的引用
+                            pre_match = buffer[:match.start()]
+                            replacement = f" [来源: {file_name}]"
+
+                            print(pre_match + replacement, end='', flush=True)
+                            full_answer += pre_match + replacement
+
+                            # buffer保留匹配后的内容
+                            buffer = buffer[match.end():]
+                        elif len(buffer) > 20 and '[' not in buffer[-10:]:
+                            # 如果buffer太长且最后10个字符没有'['，说明不会形成[doc_X]
+                            # 输出前面的内容，保留最后10个字符
+                            output = buffer[:-10]
+                            print(output, end='', flush=True)
+                            full_answer += output
+                            buffer = buffer[-10:]
+
+                print("\n" + "=" * 70)
+                if 'citation_meta' in locals():
+                    cited_count = citation_meta.get('cited_count', 0)
+                    if cited_count > 0:
+                        print(f"\n[引用追踪 | 引用了 {cited_count} 个文档]")
+                    else:
+                        print(f"\n[引用追踪 | 未找到引用标记]")
+            else:
+                # 标准模式（无引用追踪）
+                stream = llm.answer_smart_stream(
+                    question,
+                    results,
+                    conversation_context=conversation_context
+                )
+
+                # 第一个 yield 是元信息
+                metadata = next(stream)
+
+                print("\n" + "=" * 70)
+                print("回答:")
+                print("=" * 70)
+
+                # 收集完整答案（用于保存到历史）
+                full_answer = ""
+
+                # 流式输出答案
+                for token in stream:
+                    print(token, end='', flush=True)
+                    full_answer += token
+
+                print("\n" + "=" * 70)
+                print(f"\n[{metadata['mode']} | {metadata['reason']}]")
 
             # 添加助手回复到历史
             sources = [

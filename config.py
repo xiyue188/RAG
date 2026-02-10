@@ -76,6 +76,13 @@ ENABLE_THRESHOLD_FILTERING = get_bool("ENABLE_THRESHOLD_FILTERING", True)
 ENABLE_AUTO_CLASSIFICATION = get_bool("ENABLE_AUTO_CLASSIFICATION", True)
 
 # ============================================================
+# 引用追踪配置（Phase 2）
+# ============================================================
+ENABLE_CITATION_TRACKING = get_bool("ENABLE_CITATION_TRACKING", True)  # 启用引用追踪
+CITATION_MODE = os.getenv("CITATION_MODE", "inline")  # inline(内联标记) 或 json(遗留)
+CITATION_STYLE = os.getenv("CITATION_STYLE", "inline")  # inline(句后标注) 或 footnote(脚注)
+
+# ============================================================
 # LLM增强检索配置（阶段2）
 # ============================================================
 # ENABLE_QUERY_REWRITE 已删除（Phase 1 优化：实测导致检索退化）

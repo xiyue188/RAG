@@ -10,7 +10,6 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 from rag import Retriever, LLMClient, VectorDB, Embedder
-from dotenv import load_dotenv
 
 
 def main():
@@ -18,9 +17,6 @@ def main():
     print("=" * 70)
     print("阶段2: 高级检索功能测试")
     print("=" * 70)
-
-    # 加载环境变量
-    load_dotenv()
 
     # 初始化组件
     print("\n初始化组件...")

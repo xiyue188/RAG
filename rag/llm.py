@@ -361,6 +361,116 @@ class LLMClient:
 
         return answer
 
+    def answer_with_citations(
+        self,
+        question: str,
+        documents: List[Dict],
+        conversation_context: Optional[str] = None,
+        format_style: str = "inline",
+        mode: str = "inline"
+    ) -> Dict:
+        """
+        带引用的答案生成（Phase 2：精细化溯源）
+
+        参数:
+            question: str - 用户问题
+            documents: List[Dict] - 检索到的文档列表
+            conversation_context: str - 对话历史（可选）
+            format_style: str - 引用格式（inline/footnote）
+            mode: str - 引用模式（inline内联标记/json）
+
+        返回:
+            Dict - 包含answer、citations、formatted_answer等
+        """
+        from .citation import CitationManager
+
+        citation_mgr = CitationManager()
+
+        # 构建引用prompt
+        prompt = citation_mgr.build_citation_prompt(
+            question,
+            documents,
+            conversation_context,
+            mode=mode
+        )
+
+        # 调用LLM
+        logger.info(f"生成带引用的答案（模式：{mode}）...")
+        response = self.generate(prompt)
+
+        # 解析引用
+        result = citation_mgr.parse_citation_response(response, documents, mode=mode)
+
+        # 格式化引用（内联模式已经在parse时格式化）
+        if not result.get('formatted_answer'):
+            if result['parse_success'] and result['citations']:
+                formatted = citation_mgr.format_answer_with_citations(
+                    result['answer'],
+                    result['citations'],
+                    style=format_style
+                )
+                result['formatted_answer'] = formatted
+            else:
+                result['formatted_answer'] = result['answer']
+
+        logger.info(f"引用生成完成：{len(result.get('citations', []))} 条引用")
+
+        return result
+
+    def answer_with_citations_stream(
+        self,
+        question: str,
+        documents: List[Dict],
+        conversation_context: Optional[str] = None
+    ):
+        """
+        带引用的答案生成（流式版本，使用内联标记模式）
+
+        参数:
+            question: str - 用户问题
+            documents: List[Dict] - 检索到的文档列表
+            conversation_context: str - 对话历史（可选）
+
+        返回:
+            生成器 - 先yield元信息，然后流式yield文本（含内联引用标记）
+        """
+        from .citation import CitationManager
+
+        citation_mgr = CitationManager()
+
+        # 构建内联标记模式的prompt
+        prompt = citation_mgr.build_citation_prompt(
+            question,
+            documents,
+            conversation_context,
+            mode="inline"
+        )
+
+        # 先yield元信息
+        yield {
+            'mode': 'with_citations',
+            'citation_format': 'inline',
+            'documents_count': len(documents)
+        }
+
+        # 流式调用LLM并实时输出
+        logger.info("流式生成带引用的答案...")
+
+        # 收集完整响应用于后处理
+        full_response = ""
+        for token in self.stream_generate(prompt):
+            full_response += token
+            yield token
+
+        # 流式结束后，解析并yield引用信息
+        result = citation_mgr.parse_inline_citations(full_response, documents)
+        yield {
+            'type': 'citation_meta',
+            'citations': result.get('citations', []),
+            'cited_count': result.get('cited_count', 0),
+            'parse_success': result.get('parse_success', False)
+        }
+
     def answer_with_context_stream(self, question: str, context: str,
                                    template: Optional[str] = None,
                                    conversation_context: Optional[str] = None) -> Iterator[str]:
