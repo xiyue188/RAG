@@ -94,6 +94,8 @@ def get_logger(module_name: str) -> logging.Logger:
     # 从环境变量读取配置（可选）
     import os
     level = os.getenv("LOG_LEVEL", "INFO")
+    # 清理可能的注释（如 "INFO  # comment"）
+    level = level.split("#")[0].strip()
     log_dir = os.getenv("LOG_DIR", "")
 
     # 生成日志文件路径
