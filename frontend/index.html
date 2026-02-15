@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAG 系统 - Phase 1 测试</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 300px 1fr 400px;
+            gap: 20px;
+            height: calc(100vh - 40px);
+        }
+
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+
+        h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #333;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 8px;
+        }
+
+        /* 左侧：文档管理 */
+        #upload-section {
+            margin-bottom: 20px;
+        }
+
+        #file-input {
+            display: none;
+        }
+
+        .btn {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.3s;
+        }
+
+        .btn-primary {
+            background: #4CAF50;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #45a049;
+        }
+
+        .btn-danger {
+            background: #f44336;
+            color: white;
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+
+        .btn-danger:hover {
+            background: #da190b;
+        }
+
+        #upload-status {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        #doc-list {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .doc-item {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .doc-item:hover {
+            background: #f9f9f9;
+        }
+
+        .doc-name {
+            font-size: 13px;
+            color: #333;
+            word-break: break-all;
+        }
+
+        /* 中间：聊天 */
+        #chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin-bottom: 15px;
+            background: #fafafa;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+
+        .message.user {
+            background: #e3f2fd;
+            margin-left: 20%;
+        }
+
+        .message.assistant {
+            background: #f1f8e9;
+            margin-right: 20%;
+        }
+
+        .message-role {
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .message-content {
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .citation {
+            display: inline-block;
+            background: #ff9800;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            margin: 0 2px;
+        }
+
+        #input-area {
+            display: flex;
+            gap: 10px;
+        }
+
+        #question-input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        #send-btn {
+            width: 100px;
+        }
+
+        #send-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        /* 右侧：日志 */
+        #log-container {
+            flex: 1;
+            overflow-y: auto;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 5px;
+            border-left: 3px solid #4CAF50;
+            padding-left: 10px;
+        }
+
+        .log-entry.connected { border-color: #2196F3; }
+        .log-entry.resolved { border-color: #9C27B0; }
+        .log-entry.multi_query { border-color: #FF9800; }
+        .log-entry.hybrid { border-color: #00BCD4; }
+        .log-entry.rerank { border-color: #E91E63; }
+        .log-entry.retrieval { border-color: #4CAF50; }
+        .log-entry.generation { border-color: #FFC107; }
+        .log-entry.answer { border-color: #8BC34A; }
+        .log-entry.done { border-color: #4CAF50; }
+        .log-entry.error { border-color: #f44336; }
+
+        .log-timestamp {
+            color: #858585;
+            font-size: 11px;
+        }
+
+        .log-type {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+
+        .log-data {
+            color: #ce9178;
+            margin-left: 10px;
+        }
+
+        #clear-log-btn {
+            margin-bottom: 10px;
+            background: #f44336;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 左侧：文档管理 -->
+        <div class="panel">
+            <h2>📁 文档管理</h2>
+
+            <div id="upload-section">
+                <input type="file" id="file-input" multiple accept=".md,.txt">
+                <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">
+                    选择文件上传
+                </button>
+                <div id="upload-status"></div>
+                <!-- 上传进度条 -->
+                <div id="upload-progress-container" style="display: none; margin-top: 10px;">
+                    <div style="font-size: 12px; color: #666; margin-bottom: 5px;">
+                        <span id="upload-progress-text">准备上传...</span>
+                    </div>
+                    <div style="width: 100%; height: 20px; background: #ddd; border-radius: 10px; overflow: hidden;">
+                        <div id="upload-progress-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #4CAF50, #66BB6A); transition: width 0.3s ease;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <h2>📄 已上传文档</h2>
+            <div id="doc-list">
+                <div style="color: #999; text-align: center; padding: 20px;">加载中...</div>
+            </div>
+        </div>
+
+        <!-- 中间：聊天 -->
+        <div class="panel">
+            <h2>💬 对话</h2>
+            <div id="chat-messages"></div>
+            <div id="input-area">
+                <input
+                    type="text"
+                    id="question-input"
+                    placeholder="输入问题..."
+                    onkeypress="if(event.key==='Enter') sendMessage()"
+                >
+                <button id="send-btn" class="btn btn-primary" onclick="sendMessage()">发送</button>
+            </div>
+        </div>
+
+        <!-- 右侧：日志 -->
+        <div class="panel">
+            <h2>📊 RAG 工作流日志</h2>
+            <button id="clear-log-btn" class="btn" onclick="clearLog()">清空日志</button>
+            <div id="log-container"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8001/api/v1';
+        let currentController = null;
+
+        // ========== 文档管理 ==========
+        async function loadDocuments() {
+            try {
+                const res = await fetch(`${API_BASE}/documents`);
+                const data = await res.json();
+                const docList = document.getElementById('doc-list');
+
+                if (data.documents && data.documents.length > 0) {
+                    docList.innerHTML = data.documents.map(doc => `
+                        <div class="doc-item">
+                            <span class="doc-name">${doc.file}</span>
+                            <button class="btn btn-danger" onclick="deleteDocument('${doc.file}')">删除</button>
+                        </div>
+                    `).join('');
+                } else {
+                    docList.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">暂无文档</div>';
+                }
+            } catch (err) {
+                console.error('加载文档列表失败:', err);
+            }
+        }
+
+        document.getElementById('file-input').addEventListener('change', async (e) => {
+            const files = e.target.files;
+            if (!files.length) return;
+
+            const statusDiv = document.getElementById('upload-status');
+            const progressContainer = document.getElementById('upload-progress-container');
+            const progressBar = document.getElementById('upload-progress-bar');
+            const progressText = document.getElementById('upload-progress-text');
+
+            // 显示进度条
+            progressContainer.style.display = 'block';
+            progressBar.style.width = '0%';
+            progressText.textContent = '准备上传...';
+            statusDiv.textContent = '';
+
+            const formData = new FormData();
+            for (let file of files) {
+                formData.append('files', file);
+            }
+
+            try {
+                // 使用 SSE 流式上传
+                const res = await fetch(`${API_BASE}/documents/upload/stream`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                let totalSteps = 7; // 总步骤数：received, parsing, chunking, embedding, storing, indexing, complete
+                let currentStep = 0;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+
+                        try {
+                            const event = JSON.parse(line.slice(6));
+                            const { type, data } = event;
+
+                            // 添加到右侧日志
+                            addLog(type, data);
+
+                            // 更新进度条
+                            if (type === 'file_received') {
+                                currentStep = 1;
+                                progressText.textContent = `文件接收: ${data.filename}`;
+                                progressBar.style.width = `${(currentStep / totalSteps) * 100}%`;
+                            } else if (type === 'parsing_done') {
+                                currentStep = 2;
+                                progressText.textContent = `解析完成: ${data.chars} 字符`;
+                                progressBar.style.width = `${(currentStep / totalSteps) * 100}%`;
+                            } else if (type === 'chunking_done') {
+                                currentStep = 3;
+                                progressText.textContent = `分块完成: ${data.chunk_count} chunks`;
+                                progressBar.style.width = `${(currentStep / totalSteps) * 100}%`;
+                            } else if (type === 'embedding_progress') {
+                                currentStep = 4;
+                                const pct = data.percentage || 0;
+                                progressText.textContent = `Embedding 进度: ${data.current}/${data.total} (${pct}%)`;
+                                progressBar.style.width = `${(currentStep / totalSteps + pct / 100 / totalSteps) * 100}%`;
+                            } else if (type === 'storing_done') {
+                                currentStep = 5;
+                                progressText.textContent = `存储完成`;
+                                progressBar.style.width = `${(currentStep / totalSteps) * 100}%`;
+                            } else if (type === 'indexing_done') {
+                                currentStep = 6;
+                                progressText.textContent = `索引更新: 共 ${data.total_docs_in_db} 个文档`;
+                                progressBar.style.width = `${(currentStep / totalSteps) * 100}%`;
+                            } else if (type === 'upload_complete') {
+                                currentStep = 7;
+                                progressText.textContent = `✓ 上传完成: ${data.chunk_count} chunks`;
+                                progressBar.style.width = '100%';
+                            } else if (type === 'all_complete') {
+                                statusDiv.textContent = `✓ 上传成功：${data.success} 个文件，共 ${data.total} 个`;
+                                statusDiv.style.color = '#4CAF50';
+                                loadDocuments();
+
+                                // 3秒后隐藏进度条
+                                setTimeout(() => {
+                                    progressContainer.style.display = 'none';
+                                }, 3000);
+                            } else if (type === 'error') {
+                                progressText.textContent = `✗ 错误: ${data.message}`;
+                                statusDiv.textContent = `✗ 上传失败`;
+                                statusDiv.style.color = '#f44336';
+                            }
+
+                        } catch (err) {
+                            console.error('解析事件失败:', err);
+                        }
+                    }
+                }
+
+            } catch (err) {
+                statusDiv.textContent = '✗ 上传错误: ' + err.message;
+                statusDiv.style.color = '#f44336';
+                progressContainer.style.display = 'none';
+            }
+
+            e.target.value = '';
+        });
+
+        async function deleteDocument(filename) {
+            if (!confirm(`确认删除文档：${filename}？`)) return;
+
+            try {
+                const res = await fetch(`${API_BASE}/documents/${encodeURIComponent(filename)}`, {
+                    method: 'DELETE'
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    alert(`✓ 已删除 ${data.chunks_deleted} 个块`);
+                    loadDocuments();
+                }
+            } catch (err) {
+                alert('删除失败: ' + err.message);
+            }
+        }
+
+        // ========== 聊天 ==========
+        async function sendMessage() {
+            const input = document.getElementById('question-input');
+            const question = input.value.trim();
+            if (!question) return;
+
+            const sendBtn = document.getElementById('send-btn');
+            sendBtn.disabled = true;
+            input.disabled = true;
+
+            // 添加用户消息
+            addMessage('user', question);
+            input.value = '';
+
+            // 添加 AI 消息占位
+            const assistantMsgId = 'msg_' + Date.now();
+            addMessage('assistant', '', assistantMsgId);
+
+            // 取消之前的请求
+            if (currentController) {
+                currentController.abort();
+            }
+
+            currentController = new AbortController();
+
+            try {
+                const res = await fetch(`${API_BASE}/chat/stream`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        question: question,
+                        enable_citation: true,
+                        enable_multi_query: true,
+                        enable_rerank: true,
+                        enable_hybrid: true
+                    }),
+                    signal: currentController.signal
+                });
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+
+                        try {
+                            const event = JSON.parse(line.slice(6));
+                            handleSSEEvent(event, assistantMsgId);
+                        } catch (err) {
+                            console.error('解析事件失败:', err);
+                        }
+                    }
+                }
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    addLog('error', { message: err.message });
+                    updateMessage(assistantMsgId, '错误: ' + err.message);
+                }
+            } finally {
+                sendBtn.disabled = false;
+                input.disabled = false;
+                input.focus();
+                currentController = null;
+            }
+        }
+
+        function handleSSEEvent(event, msgId) {
+            const { type, data } = event;
+
+            // 记录日志
+            addLog(type, data);
+
+            // 处理消息更新
+            if (type === 'answer_chunk') {
+                appendToMessage(msgId, data.content || '');
+            } else if (type === 'citations' && data.citations && data.citations.length > 0) {
+                const citations = data.citations.map((c, i) =>
+                    `<span class="citation">${i + 1}. ${c.file}</span>`
+                ).join(' ');
+                appendToMessage(msgId, `\n\n引用来源：\n${citations}`);
+            }
+        }
+
+        function addMessage(role, content, id) {
+            const messagesDiv = document.getElementById('chat-messages');
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${role}`;
+            if (id) msgDiv.id = id;
+            msgDiv.innerHTML = `
+                <div class="message-role">${role === 'user' ? '👤 用户' : '🤖 AI'}</div>
+                <div class="message-content">${escapeHtml(content)}</div>
+            `;
+            messagesDiv.appendChild(msgDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function updateMessage(id, content) {
+            const msgDiv = document.getElementById(id);
+            if (msgDiv) {
+                msgDiv.querySelector('.message-content').textContent = content;
+            }
+        }
+
+        function appendToMessage(id, content) {
+            const msgDiv = document.getElementById(id);
+            if (msgDiv) {
+                const contentDiv = msgDiv.querySelector('.message-content');
+                contentDiv.innerHTML += content;
+            }
+
+            // 使用 requestAnimationFrame 确保 DOM 更新后再滚动
+            const chatMessages = document.getElementById('chat-messages');
+            requestAnimationFrame(() => {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ========== 日志 ==========
+        function addLog(type, data) {
+            const logContainer = document.getElementById('log-container');
+            const logEntry = document.createElement('div');
+
+            let category = 'info';
+            // 查询相关事件
+            if (type.includes('multi_query')) category = 'multi_query';
+            else if (type.includes('hybrid') || type.includes('bm25')) category = 'hybrid';
+            else if (type.includes('rerank')) category = 'rerank';
+            else if (type.includes('retrieval')) category = 'retrieval';
+            else if (type.includes('generation')) category = 'generation';
+            else if (type.includes('answer')) category = 'answer';
+            else if (type === 'done') category = 'done';
+            else if (type === 'error') category = 'error';
+            else if (type === 'connected') category = 'connected';
+            else if (type === 'resolved') category = 'resolved';
+            // 上传相关事件（新增）
+            else if (type === 'upload_start' || type === 'file_received') category = 'connected';
+            else if (type.includes('parsing') || type.includes('chunking')) category = 'hybrid';
+            else if (type.includes('embedding')) category = 'rerank';
+            else if (type.includes('storing') || type.includes('indexing')) category = 'retrieval';
+            else if (type === 'upload_complete' || type === 'all_complete') category = 'done';
+
+            logEntry.className = `log-entry ${category}`;
+
+            const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+            const dataStr = JSON.stringify(data).substring(0, 100);
+
+            logEntry.innerHTML = `
+                <span class="log-timestamp">[${timestamp}]</span>
+                <span class="log-type">${type}</span>
+                <span class="log-data">${dataStr}</span>
+            `;
+
+            logContainer.appendChild(logEntry);
+            // 不自动滚动，让用户自己控制
+        }
+
+        function clearLog() {
+            document.getElementById('log-container').innerHTML = '';
+        }
+
+        // 初始化
+        loadDocuments();
+        addLog('system', { message: '前端已就绪' });
+    </script>
+</body>
+</html>

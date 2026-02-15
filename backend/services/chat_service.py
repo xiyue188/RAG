@@ -97,9 +97,24 @@ class ChatService:
         """
         流式回答（异步生成器）
 
-        事件类型:
-            connected, resolved, retrieval_status,
-            retrieval_done, answer_chunk, citations, done, error
+        事件类型（完整 RAG 工作流）:
+            1. connected - 会话已连接
+            2. resolved - 问题消解（原始 → 解析后）
+            3. retrieval_status - 开始检索
+            4. multi_query_start - 多查询扩展开始
+            5. multi_query_done - 多查询扩展完成（含变体）
+            6. hybrid_search_start - 混合检索开始
+            7. bm25_indexing - BM25 索引构建中
+            8. bm25_indexed - BM25 索引完成
+            9. rerank_start - Rerank 精排序开始
+           10. rerank_done - Rerank 精排序完成
+           11. retrieval_results - 检索结果详情（文件名+分数）
+           12. retrieval_done - 检索完成
+           13. generation_start - 开始生成答案
+           14. answer_chunk - 答案文本片段（逐字）
+           15. citations - 引用来源列表
+           16. done - 回答完成
+           17. error - 错误信息
         """
         logger.info(f"[{session_id}] 收到问题: {question}")
 
@@ -117,8 +132,18 @@ class ChatService:
                 "data": {"original": question, "resolved": resolved_question}
             }
 
-            # 2. 高级检索
+            # 2. 高级检索（带详细日志事件）
             yield {"type": "retrieval_status", "data": {"status": "searching"}}
+            logger.info(f"[{session_id}] ✓ 发送retrieval_status事件")
+
+            # 2.1 多查询扩展开始
+            if enable_multi_query:
+                logger.info(f"[{session_id}] ✓ 准备发送multi_query_start事件")
+                yield {
+                    "type": "multi_query_start",
+                    "data": {"original": resolved_question}
+                }
+                logger.info(f"[{session_id}] ✓ 已发送multi_query_start事件")
 
             advanced_result = await asyncio.to_thread(
                 self.retriever.retrieve_advanced,
@@ -128,16 +153,107 @@ class ChatService:
                 enable_hybrid=enable_hybrid
             )
             results = advanced_result['results']
-            logger.info(f"[{session_id}] 检索完成，找到 {len(results)} 个文档")
+            stats = advanced_result.get('stats', {})
+            expanded_queries = advanced_result.get('expanded_queries', [])
 
+            # 2.2 多查询扩展完成
+            if enable_multi_query and expanded_queries:
+                yield {
+                    "type": "multi_query_done",
+                    "data": {
+                        "original": resolved_question,
+                        "variants": expanded_queries,
+                        "count": len(expanded_queries)
+                    }
+                }
+
+            # 2.3 检索方法通知
+            retrieval_method = stats.get('retrieval_method', 'unknown')
+            if retrieval_method == 'hybrid':
+                yield {
+                    "type": "hybrid_search_start",
+                    "data": {
+                        "method": "hybrid",
+                        "vector_weight": 0.7,
+                        "bm25_weight": 0.3
+                    }
+                }
+                # BM25 索引构建（模拟）
+                doc_count = self.vectordb.get_collection().count()
+                yield {
+                    "type": "bm25_indexing",
+                    "data": {"doc_count": doc_count}
+                }
+                yield {
+                    "type": "bm25_indexed",
+                    "data": {"doc_count": doc_count}
+                }
+
+            # 2.4 Rerank 精排序
+            if enable_rerank and stats.get('rerank_candidates', 0) > 0:
+                yield {
+                    "type": "rerank_start",
+                    "data": {
+                        "model": "BAAI/bge-reranker-base",
+                        "candidates": stats['rerank_candidates']
+                    }
+                }
+                yield {
+                    "type": "rerank_done",
+                    "data": {
+                        "candidates": stats['rerank_candidates'],
+                        "top_k": len(results)
+                    }
+                }
+
+            # 2.5 检索结果详情
+            result_details = []
+            for i, r in enumerate(results[:5], 1):  # 只推送前5个
+                result_details.append({
+                    "rank": i,
+                    "file": r.get('metadata', {}).get('file', 'unknown'),
+                    "category": r.get('metadata', {}).get('category', 'unknown'),
+                    "score": round(r.get('score', 0.0), 3),
+                    "distance": round(r.get('distance', 0.0), 3)
+                })
+
+            yield {
+                "type": "retrieval_results",
+                "data": {
+                    "results": result_details,
+                    "total": len(results),
+                    "method": retrieval_method
+                }
+            }
+
+            logger.info(f"[{session_id}] 检索完成，找到 {len(results)} 个文档")
             yield {"type": "retrieval_done", "data": {"num_documents": len(results)}}
 
             # 3. 流式生成答案
+            yield {"type": "generation_start", "data": {"num_docs": len(results)}}
+
             conversation_context = conversation.get_context_for_llm(max_turns=4)
             full_answer = ""
             citations = []
 
-            if enable_citation:
+            # 智能判断：如果没有检索结果或相似度不足，使用混合式RAG（回退到通用知识）
+            from config import SIMILARITY_THRESHOLD
+            should_use_context = False
+
+            if results:
+                # 确保 distance 是 float 类型
+                distance_value = results[0].get('distance', float('inf'))
+                try:
+                    max_similarity = float(distance_value)
+                except (TypeError, ValueError):
+                    max_similarity = float('inf')
+
+                if max_similarity < float(SIMILARITY_THRESHOLD):
+                    should_use_context = True
+                logger.info(f"[{session_id}] 相似度检查: max={max_similarity:.3f}, threshold={SIMILARITY_THRESHOLD}, use_context={should_use_context}")
+
+            # 如果有高质量检索结果且启用引用，使用引用模式
+            if enable_citation and should_use_context:
                 async for event in self._stream_with_citations(
                     resolved_question, results, conversation_context
                 ):
@@ -151,11 +267,22 @@ class ChatService:
                 if citations:
                     yield {"type": "citations", "data": {"citations": citations}}
             else:
+                # 使用智能模式（混合式RAG：有好结果用文档，无结果或差结果用通用知识）
+                logger.info(f"[{session_id}] 使用智能模式（混合式RAG）")
                 async for chunk in _sync_generator_to_async(
                     lambda: self.llm.answer_smart_stream(
-                        resolved_question, results, conversation_context
+                        resolved_question,
+                        results,
+                        threshold=float(SIMILARITY_THRESHOLD),  # 显式传入 float 类型
+                        conversation_context=conversation_context
                     )
                 ):
+                    # 跳过元数据字典
+                    if isinstance(chunk, dict):
+                        metadata = chunk
+                        logger.info(f"[{session_id}] 智能模式: {metadata.get('mode')} - {metadata.get('reason')}")
+                        continue
+
                     full_answer += chunk
                     yield {"type": "answer_chunk", "data": {"content": chunk}}
 

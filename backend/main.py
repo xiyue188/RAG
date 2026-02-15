@@ -64,13 +64,14 @@ app.add_middleware(
 app.add_middleware(RateLimitMiddleware, requests_per_minute=10)
 
 # 注册路由
-from backend.api import routes, sse
+from backend.api import routes, sse, upload
 from backend.schemas import ErrorResponse, ErrorDetail
 from fastapi.responses import JSONResponse
 from fastapi import status
 
 app.include_router(routes.router, prefix="/api/v1", tags=["REST API"])
 app.include_router(sse.router, prefix="/api/v1", tags=["SSE Stream"])
+app.include_router(upload.router, prefix="/api/v1", tags=["Documents"])
 
 
 # ==================== 全局异常处理 ====================

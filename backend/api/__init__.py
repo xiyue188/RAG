@@ -2,6 +2,6 @@
 API端点模块
 """
 
-from . import routes, sse
+from . import routes, sse, upload
 
-__all__ = ["routes", "sse"]
+__all__ = ["routes", "sse", "upload"]
