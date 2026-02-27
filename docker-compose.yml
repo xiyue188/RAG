@@ -17,6 +17,7 @@ services:
       - ./chroma_db:/app/chroma_db
       - ./data/documents:/app/data/documents
       - ./logs:/app/logs
+      - ./models:/home/app/.cache/huggingface
     restart: unless-stopped
     healthcheck:
       # 用 Python 做健康检查（容器内已有 Python，不需要 curl）
