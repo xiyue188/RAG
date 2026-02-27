@@ -255,35 +255,47 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
     """
     logger.info(f"收到 SSE 流式上传请求：{len(files)} 个文件")
 
+    # 在生成器外提前读取所有文件内容，避免 SSE 生成器内文件句柄已关闭
+    file_data = []
+    for file in files:
+        content = await file.read()
+        file_data.append({
+            "filename": file.filename,
+            "content": content,
+            "ext": Path(file.filename).suffix.lower()
+        })
+
     async def event_generator():
         """SSE 事件生成器"""
         ingestion = get_ingestion()
         adapter = StreamingIngestionAdapter(ingestion)
 
-        total_files = len(files)
+        total_files = len(file_data)
         processed_count = 0
         failed_count = 0
 
         # 发送开始事件
         yield f"data: {json.dumps({'type': 'upload_start', 'data': {'total_files': total_files}})}\n\n"
 
-        for file_index, file in enumerate(files, 1):
+        for file_index, fd in enumerate(file_data, 1):
+            filename = fd["filename"]
+            content = fd["content"]
+            file_ext = fd["ext"]
+
             # 检查文件类型
-            file_ext = Path(file.filename).suffix.lower()
             if file_ext not in [".md", ".txt"]:
-                logger.warning(f"跳过不支持的文件：{file.filename}")
-                yield f"data: {json.dumps({'type': 'file_skipped', 'data': {'filename': file.filename, 'reason': f'不支持的文件格式：{file_ext}'}})}\n\n"
+                logger.warning(f"跳过不支持的文件：{filename}")
+                yield f"data: {json.dumps({'type': 'file_skipped', 'data': {'filename': filename, 'reason': f'不支持的文件格式：{file_ext}'}})}\n\n"
                 failed_count += 1
                 continue
 
-            # 读取文件内容到临时文件
+            # 处理文件内容
             try:
-                content = await file.read()
 
                 # 检查文件大小
                 if len(content) > MAX_FILE_SIZE_BYTES:
-                    logger.warning(f"拒绝过大文件：{file.filename} ({len(content)} bytes)")
-                    yield f"data: {json.dumps({'type': 'error', 'data': {'filename': file.filename, 'stage': 'file_read', 'message': f'文件过大（{len(content)//1024}KB），上限 10MB'}})}\n\n"
+                    logger.warning(f"拒绝过大文件：{filename} ({len(content)} bytes)")
+                    yield f"data: {json.dumps({'type': 'error', 'data': {'filename': filename, 'stage': 'file_read', 'message': f'文件过大（{len(content)//1024}KB），上限 10MB'}})}\n\n"
                     failed_count += 1
                     continue
 
@@ -296,13 +308,13 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
                     temp_file.write(content)
                     temp_path = temp_file.name
 
-                logger.info(f"[{file_index}/{total_files}] 开始处理：{file.filename}")
+                logger.info(f"[{file_index}/{total_files}] 开始处理：{filename}")
 
                 # 流式摄入
                 try:
                     async for event in adapter.ingest_file_stream(
                         temp_path,
-                        file.filename,
+                        filename,
                         category="uploaded"
                     ):
                         # 将事件转换为 SSE 格式
@@ -320,8 +332,8 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
                     Path(temp_path).unlink(missing_ok=True)
 
             except Exception as e:
-                logger.error(f"处理文件失败：{file.filename} - {e}", exc_info=True)
-                yield f"data: {json.dumps({'type': 'error', 'data': {'filename': file.filename, 'stage': 'file_read', 'message': str(e)}})}\n\n"
+                logger.error(f"处理文件失败：{filename} - {e}", exc_info=True)
+                yield f"data: {json.dumps({'type': 'error', 'data': {'filename': filename, 'stage': 'file_read', 'message': str(e)}})}\n\n"
                 failed_count += 1
 
         # 上传完成后，刷新 ChatService 中的 BM25 索引缓存
