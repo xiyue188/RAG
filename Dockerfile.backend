@@ -8,8 +8,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 切换阿里云 apt 镜像源（中国服务器专用，下载速度提升 10x）
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
@@ -27,8 +29,11 @@ FROM base as dependencies
 # 复制依赖文件
 COPY --chown=app:app requirements.txt .
 
-# 安装Python依赖
-RUN pip install --user --no-warn-script-location -r requirements.txt
+# 安装Python依赖（使用清华镜像源，中国服务器提速）
+RUN pip install --user --no-warn-script-location \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    --trusted-host pypi.tuna.tsinghua.edu.cn \
+    -r requirements.txt
 
 # ==================== 阶段3：最终镜像 ====================
 FROM base as final
