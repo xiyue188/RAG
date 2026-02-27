@@ -1,6 +1,5 @@
-# 依赖
+# 依赖（注意：package-lock.json 必须保留，npm ci 依赖它）
 node_modules/
-package-lock.json
 
 # 构建产物（会重新构建）
 dist/
