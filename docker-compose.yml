@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # ==================== 后端服务 ====================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: deepblue-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+    volumes:
+      # 持久化数据（bind mount，数据保存在宿主机目录）
+      - ./chroma_db:/app/chroma_db
+      - ./data/documents:/app/data/documents
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      # 用 Python 做健康检查（容器内已有 Python，不需要 curl）
+      # 路径是 /health，不是 /api/health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - rag-network
+
+  # ==================== 前端服务 ====================
+  frontend:
+    build:
+      context: ./frontend-vue
+      dockerfile: Dockerfile.frontend
+    container_name: deepblue-frontend
+    ports:
+      # 暴露 80 端口，同学直接访问 http://服务器IP 即可，不需要带端口号
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+networks:
+  rag-network:
+    driver: bridge

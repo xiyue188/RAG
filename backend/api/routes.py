@@ -3,7 +3,7 @@ REST API路由（非流式）
 """
 
 from fastapi import APIRouter, HTTPException, status
-from backend.schemas import QueryRequest, QueryResponse, DocumentListResponse, CitationInfo
+from backend.schemas import QueryRequest, QueryResponse, DocumentListResponse, CitationInfo, DocumentInfo, ChunkInfo
 from backend.services.chat_service import get_chat_service
 from rag.logger import get_logger
 from rag import VectorDB
@@ -80,27 +80,114 @@ async def clear_session(session_id: str):
 
 
 @router.get("/documents", response_model=DocumentListResponse, summary="获取文档列表")
-async def list_documents():
+async def list_documents(include_chunks: bool = False):
+    """
+    获取文档列表
+
+    Args:
+        include_chunks: 是否包含文档切片详情（默认 False）
+    """
     try:
         vectordb = VectorDB()
         collection = vectordb.get_collection()
-        results = collection.get(include=["metadatas"])
 
-        documents = []
-        seen_files = set()
-        for metadata in results.get("metadatas", []):
-            file = metadata.get("file", "unknown")
-            if file not in seen_files:
-                documents.append({
-                    "file": file,
-                    "category": metadata.get("category", "unknown"),
-                })
-                seen_files.add(file)
+        if include_chunks:
+            # 获取完整数据（包含文档内容）
+            results = collection.get(include=["metadatas", "documents"])
 
-        return DocumentListResponse(documents=documents, total=len(documents))
+            # 按文件分组整理 chunks
+            file_chunks_map = {}
+            ids = results.get("ids", [])
+            documents = results.get("documents", [])
+            metadatas = results.get("metadatas", [])
+
+            for i, (chunk_id, content, metadata) in enumerate(zip(ids, documents, metadatas)):
+                file = metadata.get("file", "unknown")
+                category = metadata.get("category", "unknown")
+
+                if file not in file_chunks_map:
+                    file_chunks_map[file] = {
+                        "file": file,
+                        "category": category,
+                        "chunks": []
+                    }
+
+                file_chunks_map[file]["chunks"].append(
+                    ChunkInfo(
+                        id=chunk_id,
+                        content=content,
+                        index=len(file_chunks_map[file]["chunks"])
+                    )
+                )
+
+            documents_list = [
+                DocumentInfo(**file_data)
+                for file_data in file_chunks_map.values()
+            ]
+        else:
+            # 只获取元数据（不含文档内容）
+            results = collection.get(include=["metadatas"])
+
+            documents_list = []
+            seen_files = set()
+            for metadata in results.get("metadatas", []):
+                file = metadata.get("file", "unknown")
+                if file not in seen_files:
+                    documents_list.append(DocumentInfo(
+                        file=file,
+                        category=metadata.get("category", "unknown"),
+                        chunks=None
+                    ))
+                    seen_files.add(file)
+
+        return DocumentListResponse(documents=documents_list, total=len(documents_list))
 
     except Exception as e:
         logger.error(f"获取文档列表错误: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/documents/{file_name:path}", summary="删除指定文档")
+async def delete_document(file_name: str):
+    """
+    删除指定文档的所有切片
+
+    Args:
+        file_name: 文件名（可能包含路径，如 "policies/pet_policy.md"）
+    """
+    try:
+        vectordb = VectorDB()
+        collection = vectordb.get_collection()
+
+        # 获取该文件的所有 chunk IDs
+        results = collection.get(
+            where={"file": file_name},
+            include=["metadatas"]
+        )
+
+        chunk_ids = results.get("ids", [])
+
+        if not chunk_ids:
+            raise HTTPException(
+                status_code=404,
+                detail=f"文档 '{file_name}' 不存在"
+            )
+
+        # 删除所有相关 chunks
+        collection.delete(ids=chunk_ids)
+
+        logger.info(f"已删除文档: {file_name}, 共 {len(chunk_ids)} 个切片")
+
+        return {
+            "message": f"文档已删除",
+            "file": file_name,
+            "chunks_deleted": len(chunk_ids)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"删除文档错误: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

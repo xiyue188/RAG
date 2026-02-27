@@ -68,8 +68,8 @@ SIMILARITY_THRESHOLD = get_float("SIMILARITY_THRESHOLD", 0.7)
 RETRIEVAL_DISTANCE_THRESHOLD = get_float("RETRIEVAL_DISTANCE_THRESHOLD", 0.7)
 MIN_RELEVANCE_SCORE = 0.3  # 保留用于未来扩展
 
-# 检索模式
-RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "metadata_only")
+# 检索模式（universal=全库搜索，metadata_only=类别名过滤，keyword=关键词分类）
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "universal")
 
 # 检索优化开关
 ENABLE_THRESHOLD_FILTERING = get_bool("ENABLE_THRESHOLD_FILTERING", True)
@@ -86,20 +86,20 @@ CITATION_STYLE = os.getenv("CITATION_STYLE", "inline")  # inline(句后标注) �
 # LLM增强检索配置（阶段2）
 # ============================================================
 # ENABLE_QUERY_REWRITE 已删除（Phase 1 优化：实测导致检索退化）
-ENABLE_MULTI_QUERY = get_bool("ENABLE_MULTI_QUERY", False)
+ENABLE_MULTI_QUERY = get_bool("ENABLE_MULTI_QUERY", False)   # Hybrid 模式下自动跳过
 NUM_EXPANDED_QUERIES = get_int("NUM_EXPANDED_QUERIES", 3)
 
 # ============================================================
 # Rerank精排序配置（阶段3）
 # ============================================================
 ENABLE_RERANK = get_bool("ENABLE_RERANK", False)
-RERANK_TOP_K = get_int("RERANK_TOP_K", 20)  # 粗排候选数
-RERANK_MODEL = os.getenv("RERANK_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANK_TOP_K = get_int("RERANK_TOP_K", 20)
+RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")  # 中文首选
 
 # ============================================================
 # Hybrid混合检索配置（阶段3 Part 2）
 # ============================================================
-ENABLE_HYBRID = get_bool("ENABLE_HYBRID", False)
+ENABLE_HYBRID = get_bool("ENABLE_HYBRID", True)   # 默认开启，中文场景首选
 BM25_WEIGHT = get_float("BM25_WEIGHT", 0.3)      # BM25权重
 VECTOR_WEIGHT = get_float("VECTOR_WEIGHT", 0.7)  # 向量检索权重
 HYBRID_TOP_K = get_int("HYBRID_TOP_K", 20)       # Hybrid检索候选数
@@ -162,8 +162,8 @@ QWEN_API_KEY = os.getenv("QWEN_API_KEY", "")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-turbo")
 
 # LLM 生成参数
-LLM_TEMPERATURE = get_float("LLM_TEMPERATURE", 0.7)
-LLM_MAX_TOKENS = get_int("LLM_MAX_TOKENS", 500)
+LLM_TEMPERATURE = get_float("LLM_TEMPERATURE", 0.5)   # RAG场景偏低更好
+LLM_MAX_TOKENS = get_int("LLM_MAX_TOKENS", 800)
 LLM_TIMEOUT = get_int("LLM_TIMEOUT", 30)
 
 # ============================================================

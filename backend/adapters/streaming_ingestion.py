@@ -13,7 +13,7 @@ import asyncio
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from rag import DocumentIngestion
-from rag.chunker import chunk_text
+from rag.chunker import chunk_with_metadata
 from rag.logger import get_logger
 from config import ENCODING
 
@@ -136,8 +136,10 @@ class StreamingIngestionAdapter:
             logger.info(f"[摄入] 开始分块: {filename}")
 
             await asyncio.sleep(0)
-            # 调用核心模块的分块函数
-            chunks = chunk_text(content)
+            # 调用结构感知切块（返回 [(text, metadata), ...] 对）
+            chunk_pairs = chunk_with_metadata(content)
+            chunks = [pair[0] for pair in chunk_pairs]
+            chunk_metas = [pair[1] for pair in chunk_pairs]
             chunk_count = len(chunks)
 
             yield {
@@ -209,15 +211,12 @@ class StreamingIngestionAdapter:
 
             await asyncio.sleep(0)
 
-            # 准备数据
+            # 准备数据：base 元数据 + 每块的 header 元数据合并
             file_stem = Path(filename).stem
             ids = [f"{file_stem}_chunk_{i}" for i in range(chunk_count)]
             metadatas = [
-                {
-                    "file": filename,
-                    "category": category
-                }
-                for _ in range(chunk_count)
+                {"file": filename, "category": category, **chunk_metas[i]}
+                for i in range(chunk_count)
             ]
 
             # 调用核心模块的存储方法

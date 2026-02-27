@@ -11,6 +11,7 @@ from datetime import datetime
 class QueryRequest(BaseModel):
     """对话查询请求"""
     question: str = Field(..., description="用户问题", min_length=1, max_length=1000)
+    use_retrieval: bool = Field(True, description="是否使用知识库检索（false则只用通用知识回答）")
     enable_multi_query: bool = Field(True, description="是否启用多查询扩展")
     enable_rerank: bool = Field(False, description="是否启用重排序")
     enable_hybrid: bool = Field(True, description="是否启用混合检索")
@@ -20,6 +21,7 @@ class QueryRequest(BaseModel):
         "json_schema_extra": {
             "examples": [{
                 "question": "什么是宠物政策？",
+                "use_retrieval": True,
                 "enable_multi_query": True,
                 "enable_rerank": False,
                 "enable_hybrid": True,
@@ -29,6 +31,18 @@ class QueryRequest(BaseModel):
     }
 
 # ==================== 响应模型 ====================
+
+class ChunkInfo(BaseModel):
+    """文档切片信息"""
+    id: str = Field(..., description="切片ID")
+    content: str = Field(..., description="切片内容")
+    index: int = Field(..., description="切片索引")
+
+class DocumentInfo(BaseModel):
+    """文档信息（含切片）"""
+    file: str = Field(..., description="文件名")
+    category: str = Field(..., description="分类")
+    chunks: Optional[List[ChunkInfo]] = Field(None, description="文档切片列表（可选）")
 
 class CitationInfo(BaseModel):
     """引用信息"""
@@ -49,7 +63,7 @@ class QueryResponse(BaseModel):
 
 class DocumentListResponse(BaseModel):
     """文档列表响应"""
-    documents: List[Dict[str, Any]] = Field(..., description="文档列表")
+    documents: List[DocumentInfo] = Field(..., description="文档列表")
     total: int = Field(..., description="总数")
 
 # ==================== 错误响应模型 ====================

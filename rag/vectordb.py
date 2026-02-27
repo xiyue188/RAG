@@ -66,9 +66,12 @@ class VectorDB:
         return self.collection
 
     def get_collection(self):
-        """获取集合"""
+        """获取或自动创建集合（空库时不报错）"""
         if self.collection is None:
-            self.collection = self.client.get_collection(name=self.collection_name)
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": SIMILARITY_METRIC}
+            )
         return self.collection
 
     def add(self, ids: List[str], embeddings: List[List[float]],

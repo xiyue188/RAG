@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from .chunker import chunk_text
+from .chunker import chunk_text, chunk_text_semantic, chunk_with_metadata
 from .embedder import Embedder
 from .vectordb import VectorDB
 from config import DATA_DIR, SUPPORTED_FILE_TYPES, ENCODING
@@ -52,15 +52,17 @@ class DocumentIngestion:
         返回:
             int - 添加的块数量
         """
-        # 1. 分块
-        chunks = chunk_text(text, size=chunk_size, overlap=chunk_overlap)
+        # 1. 分块（🎯 SOTA：结构感知切分 + header 元数据）
+        chunk_pairs = chunk_with_metadata(text, size=chunk_size, overlap=chunk_overlap)
 
-        # 2. 向量化
+        # 2. 向量化（只传文本部分）
+        chunks = [pair[0] for pair in chunk_pairs]
         embeddings = self.embedder.encode(chunks, to_list=True)
 
-        # 3. 准备数据
+        # 3. 准备数据：base 元数据 + 每块的 header 元数据合并
+        base_meta = metadata or {}
         ids = [f"{doc_id}_chunk_{i}" for i in range(len(chunks))]
-        metadatas = [metadata or {} for _ in range(len(chunks))]
+        metadatas = [{**base_meta, **pair[1]} for pair in chunk_pairs]
 
         # 4. 入库
         self.vectordb.add(
@@ -72,13 +74,15 @@ class DocumentIngestion:
 
         return len(chunks)
 
-    def ingest_file(self, file_path: str, category: Optional[str] = None) -> int:
+    def ingest_file(self, file_path: str, category: Optional[str] = None,
+                    original_filename: Optional[str] = None) -> int:
         """
         摄入单个文件
 
         参数:
             file_path: str - 文件路径
             category: str - 类别（可选）
+            original_filename: str - 原始文件名（用于上传临时文件时保留原名）
 
         返回:
             int - 添加的块数量
@@ -98,14 +102,15 @@ class DocumentIngestion:
             print(f"✗ 读取文件失败 {file_path}: {e}")
             return 0
 
-        # 准备元数据
+        # 准备元数据（🎯 使用原始文件名而非临时文件名）
+        display_name = original_filename or file_path.name
         metadata = {
-            "file": file_path.name,
+            "file": display_name,
             "category": category or "uncategorized"
         }
 
         # 摄入
-        doc_id = file_path.stem  # 文件名（不含扩展名）
+        doc_id = Path(display_name).stem  # 使用原始文件名（不含扩展名）
         chunk_count = self.ingest_text(content, doc_id, metadata)
 
         return chunk_count

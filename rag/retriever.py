@@ -104,8 +104,10 @@ class Retriever:
                 'metadata': results['metadatas'][0][i],
             }
             # 添加距离信息（如果有）
+            # 修复：确保 distance 不会是 None，ChromaDB 有时返回 None 值
             if 'distances' in results and results['distances']:
-                result['distance'] = results['distances'][0][i]
+                distance_value = results['distances'][0][i]
+                result['distance'] = distance_value if distance_value is not None else 0.0
 
             formatted_results.append(result)
 
@@ -220,20 +222,11 @@ class Retriever:
         results = self.retrieve(query, top_k=candidate_k, category_filter=category_filter)
 
         # 2. 过滤低质量结果
-        filtered = [r for r in results if r.get('distance', 999) < threshold]
+        filtered = [r for r in results if (r.get('distance') or 999) < threshold]
 
         logger.info(f"阈值过滤: {len(results)} -> {len(filtered)} (threshold={threshold})")
 
-        # 3. 如果过滤后太少，放宽阈值
-        if len(filtered) < 2 and len(results) > 0:
-            relaxed_threshold = threshold * 1.5
-            filtered = [r for r in results if r.get('distance', 999) < relaxed_threshold]
-            logger.warning(
-                f"过滤后结果不足，放宽阈值: {threshold} -> {relaxed_threshold}, "
-                f"结果数: {len(filtered)}"
-            )
-
-        # 4. 返回 top-k
+        # 3. 返回 top-k（宁缺毋滥，不放宽阈值）
         return filtered[:top_k]
 
     def retrieve_smart(
@@ -381,15 +374,16 @@ class Retriever:
 
                 # 如果已存在，保留距离更小的结果
                 if doc_id in all_results:
-                    existing_distance = all_results[doc_id].get('distance', 999)
-                    new_distance = result.get('distance', 999)
+                    # 修复：使用 or 确保 None 值被替换为默认值
+                    existing_distance = all_results[doc_id].get('distance') or 999
+                    new_distance = result.get('distance') or 999
                     if new_distance < existing_distance:
                         all_results[doc_id] = result
                 else:
                     all_results[doc_id] = result
 
-        # 按距离排序
-        merged = sorted(all_results.values(), key=lambda x: x.get('distance', 999))
+        # 按距离排序（修复：确保 None 值被替换）
+        merged = sorted(all_results.values(), key=lambda x: x.get('distance') or 999)
 
         logger.info(f"多查询合并: {len(queries)} 个查询 -> {len(merged)} 个去重结果")
 
@@ -484,15 +478,33 @@ class Retriever:
     # Hybrid混合检索方法
     # ============================================================
 
+    def invalidate_bm25_cache(self):
+        """上传新文档后调用，强制下次检索时重建 BM25 索引"""
+        if hasattr(self, '_bm25_index'):
+            del self._bm25_index
+            del self._bm25_docs
+            del self._bm25_metadatas
+            del self._bm25_ids
+            logger.info("BM25 索引缓存已清除，下次检索时重建")
+
     def _build_bm25_index(self):
         """
-        构建 BM25 索引（延迟加载）
+        构建 BM25 索引（延迟加载，文档数变化时自动重建）
 
         使用 jieba 进行中文分词，构建 BM25 索引用于关键词检索
 
         返回:
             BM25Okapi - BM25 索引实例
         """
+        # 检查文档数是否变化，若变化则强制重建
+        current_count = self.vectordb.count()
+        cached_count = getattr(self, '_bm25_doc_count', -1)
+        if hasattr(self, '_bm25_index') and current_count == cached_count:
+            return self._bm25_index
+        elif hasattr(self, '_bm25_index'):
+            logger.info(f"文档数变化 ({cached_count} → {current_count})，重建 BM25 索引")
+            del self._bm25_index
+
         if not hasattr(self, '_bm25_index'):
             try:
                 import jieba
@@ -526,6 +538,7 @@ class Retriever:
 
                 # 构建 BM25 索引
                 self._bm25_index = BM25Okapi(tokenized_docs)
+                self._bm25_doc_count = current_count
 
                 logger.info(f"✓ BM25 索引构建完成（{len(documents)} 个文档）")
 
@@ -658,27 +671,31 @@ class Retriever:
 
         # Step 3: 归一化分数并融合
         # 归一化向量检索分数（距离转为相似度，范围 0-1）
+        # 🎯 最佳实践：使用绝对距离转换，而非相对归一化
+        # 原因：相对归一化会让所有不相关文档中的"最好"文档得到高分
         vector_scores = {}
         if vector_results:
-            max_distance = max([r.get('distance', 0) for r in vector_results])
-            min_distance = min([r.get('distance', 0) for r in vector_results])
-            distance_range = max_distance - min_distance if max_distance > min_distance else 1.0
+            logger.info(f"🔧 使用修复后的代码处理 {len(vector_results)} 个向量结果")
 
             for r in vector_results:
                 doc_id = r.get('id', r['document'][:50])
-                distance = r.get('distance', 0)
-                # 距离越小，分数越高
-                normalized_score = 1.0 - ((distance - min_distance) / distance_range)
+                distance = r.get('distance') or 0  # 修复：确保不会是 None
+
+                # 使用绝对距离转换：distance 0-2 → score 1-0
+                # 余弦距离范围 [0, 2]，0 表示完全相同，2 表示完全相反
+                normalized_score = max(0.0, 1.0 - (distance / 2.0))
                 vector_scores[doc_id] = normalized_score
 
         # 归一化 BM25 分数（范围 0-1）
         bm25_scores = {}
         if bm25_results:
-            max_bm25 = max([r.get('bm25_score', 0) for r in bm25_results])
+            # 修复：使用 or 0 确保 None 值被替换为 0
+            bm25_scores_list = [r.get('bm25_score') or 0 for r in bm25_results]
+            max_bm25 = max(bm25_scores_list) if bm25_scores_list else 0
 
             for r in bm25_results:
                 doc_id = r.get('id', r['document'][:50])
-                bm25_score = r.get('bm25_score', 0)
+                bm25_score = r.get('bm25_score') or 0  # 修复：确保不会是 None
                 normalized_score = bm25_score / max_bm25 if max_bm25 > 0 else 0
                 bm25_scores[doc_id] = normalized_score
 
@@ -795,14 +812,17 @@ class Retriever:
         working_query = query
 
         # Step 1: Multi-Query Expansion
+        # 注意：Hybrid 模式只支持单查询，multi_query 在此路径下无效，跳过以节省 LLM 调用
         expanded_queries = None
         queries_to_search = [working_query]
 
-        if enable_multi_query and self.llm is not None:
+        if enable_multi_query and not enable_hybrid and self.llm is not None:
             expanded_queries = self._expand_queries(working_query)
             queries_to_search = expanded_queries
             stats["queries_expanded"] = len(expanded_queries)
         else:
+            if enable_multi_query and enable_hybrid:
+                logger.debug("Hybrid 模式已启用，跳过 Multi-Query 扩展（两者互斥）")
             stats["queries_expanded"] = 1
 
         # Step 3: 确定分类
@@ -845,15 +865,25 @@ class Retriever:
         # Step 5: 阈值过滤
         if enable_threshold:
             threshold = RETRIEVAL_DISTANCE_THRESHOLD
-            filtered = [r for r in results if r.get('distance', 999) < threshold]
-
-            # 如果过滤后太少，放宽阈值
-            if len(filtered) < 2 and len(results) > 0:
-                relaxed_threshold = threshold * 1.5
-                filtered = [r for r in results if r.get('distance', 999) < relaxed_threshold]
-                stats["threshold_relaxed"] = True
+            if enable_hybrid:
+                # Hybrid 模式：用 hybrid_score 过滤（越大越好，阈值取补集）
+                # hybrid_score ∈ [0,1]，(1 - threshold) 作为最低可接受分数
+                min_hybrid_score = 1.0 - threshold
+                filtered = [r for r in results if r.get('hybrid_score', 0) >= min_hybrid_score]
+                if len(filtered) < 2 and len(results) > 0:
+                    filtered = [r for r in results if r.get('hybrid_score', 0) >= min_hybrid_score * 0.6]
+                    stats["threshold_relaxed"] = True
+                else:
+                    stats["threshold_relaxed"] = False
             else:
-                stats["threshold_relaxed"] = False
+                # 纯向量模式：用 distance 过滤（越小越好）
+                filtered = [r for r in results if (r.get('distance') or 999) < threshold]
+                if len(filtered) < 2 and len(results) > 0:
+                    relaxed_threshold = threshold * 1.5
+                    filtered = [r for r in results if (r.get('distance') or 999) < relaxed_threshold]
+                    stats["threshold_relaxed"] = True
+                else:
+                    stats["threshold_relaxed"] = False
 
             results = filtered
             stats["filtered_results_count"] = len(results)

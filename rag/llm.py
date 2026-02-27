@@ -14,6 +14,7 @@ from config import (
 )
 from typing import Optional, List, Dict, Iterator
 import time
+import functools
 from .logger import get_logger
 
 # 初始化logger
@@ -41,7 +42,7 @@ class LLMClient:
 
         # 根据提供商初始化客户端
         self.client = None
-        self._init_client()
+        self._init_client() 
 
     def _validate_config(self):
         """验证配置和依赖"""
@@ -111,11 +112,23 @@ class LLMClient:
 
         logger.info("LLM 客户端初始化完成")
 
+    # ── 重试配置 ──────────────────────────────────────────────
+    _RETRY_MAX = 3          # 最大重试次数
+    _RETRY_DELAY = 2.0      # 初始等待秒数（指数退避：2s → 4s → 8s）
+    # 触发重试的异常关键词
+    _RETRY_KEYWORDS = ("10054", "ConnectError", "ConnectTimeout",
+                       "Timeout", "connection", "handshake", "10061")
+
+    def _is_retryable(self, exc: Exception) -> bool:
+        """判断异常是否值得重试（网络抖动类）"""
+        msg = str(exc)
+        return any(kw.lower() in msg.lower() for kw in self._RETRY_KEYWORDS)
+
     def generate(self, prompt: str, system_prompt: Optional[str] = None,
                  temperature: Optional[float] = None,
                  max_tokens: Optional[int] = None) -> str:
         """
-        生成回复
+        生成回复（含自动重试）
 
         参数:
             prompt: str - 用户提示词
@@ -130,31 +143,35 @@ class LLMClient:
         temperature = temperature if temperature is not None else LLM_TEMPERATURE
         max_tokens = max_tokens if max_tokens is not None else LLM_MAX_TOKENS
 
-        try:
-            if self.provider == "openai":
-                return self._generate_openai(prompt, system_prompt, temperature, max_tokens)
+        dispatch = {
+            "openai": functools.partial(self._generate_openai, prompt, system_prompt, temperature, max_tokens),
+            "anthropic": functools.partial(self._generate_anthropic, prompt, system_prompt, temperature, max_tokens),
+            "zhipu": functools.partial(self._generate_zhipu, prompt, system_prompt, temperature, max_tokens),
+            "qwen": functools.partial(self._generate_qwen, prompt, system_prompt, temperature, max_tokens),
+        }
+        if self.provider not in dispatch:
+            raise ValueError(f"不支持的提供商: {self.provider}")
 
-            elif self.provider == "anthropic":
-                return self._generate_anthropic(prompt, system_prompt, temperature, max_tokens)
-
-            elif self.provider == "zhipu":
-                return self._generate_zhipu(prompt, system_prompt, temperature, max_tokens)
-
-            elif self.provider == "qwen":
-                return self._generate_qwen(prompt, system_prompt, temperature, max_tokens)
-
-            else:
-                raise ValueError(f"不支持的提供商: {self.provider}")
-
-        except Exception as e:
-            logger.error(f"LLM 调用失败: {e}", exc_info=True)
-            raise  # 重新抛出异常，避免静默失败
+        last_exc = None
+        for attempt in range(1, self._RETRY_MAX + 1):
+            try:
+                return dispatch[self.provider]()
+            except Exception as e:
+                last_exc = e
+                if self._is_retryable(e) and attempt < self._RETRY_MAX:
+                    wait = self._RETRY_DELAY * (2 ** (attempt - 1))
+                    logger.warning(f"LLM 调用失败（第{attempt}次），{wait:.0f}s 后重试: {e}")
+                    time.sleep(wait)
+                else:
+                    logger.error(f"LLM 调用失败: {e}", exc_info=True)
+                    raise
+        raise last_exc  # 永远不会到这里，为了类型检查
 
     def stream_generate(self, prompt: str, system_prompt: Optional[str] = None,
                        temperature: Optional[float] = None,
                        max_tokens: Optional[int] = None) -> Iterator[str]:
         """
-        流式生成回复（实时输出）
+        流式生成回复（含自动重试，仅重试初始连接）
 
         参数:
             prompt: str - 用户提示词
@@ -169,25 +186,30 @@ class LLMClient:
         temperature = temperature if temperature is not None else LLM_TEMPERATURE
         max_tokens = max_tokens if max_tokens is not None else LLM_MAX_TOKENS
 
-        try:
-            if self.provider == "openai":
-                yield from self._stream_openai(prompt, system_prompt, temperature, max_tokens)
+        stream_dispatch = {
+            "openai": functools.partial(self._stream_openai, prompt, system_prompt, temperature, max_tokens),
+            "anthropic": functools.partial(self._stream_anthropic, prompt, system_prompt, temperature, max_tokens),
+            "zhipu": functools.partial(self._stream_zhipu, prompt, system_prompt, temperature, max_tokens),
+            "qwen": functools.partial(self._stream_qwen, prompt, system_prompt, temperature, max_tokens),
+        }
+        if self.provider not in stream_dispatch:
+            raise ValueError(f"不支持的提供商: {self.provider}")
 
-            elif self.provider == "anthropic":
-                yield from self._stream_anthropic(prompt, system_prompt, temperature, max_tokens)
-
-            elif self.provider == "zhipu":
-                yield from self._stream_zhipu(prompt, system_prompt, temperature, max_tokens)
-
-            elif self.provider == "qwen":
-                yield from self._stream_qwen(prompt, system_prompt, temperature, max_tokens)
-
-            else:
-                raise ValueError(f"不支持的提供商: {self.provider}")
-
-        except Exception as e:
-            logger.error(f"LLM 流式调用失败: {e}", exc_info=True)
-            raise
+        last_exc = None
+        for attempt in range(1, self._RETRY_MAX + 1):
+            try:
+                yield from stream_dispatch[self.provider]()
+                return  # 流式成功结束
+            except Exception as e:
+                last_exc = e
+                if self._is_retryable(e) and attempt < self._RETRY_MAX:
+                    wait = self._RETRY_DELAY * (2 ** (attempt - 1))
+                    logger.warning(f"LLM 流式调用失败（第{attempt}次），{wait:.0f}s 后重试: {e}")
+                    time.sleep(wait)
+                else:
+                    logger.error(f"LLM 流式调用失败: {e}", exc_info=True)
+                    raise
+        raise last_exc
 
     def _generate_openai(self, prompt, system_prompt, temperature, max_tokens):
         """OpenAI API 调用"""
@@ -446,11 +468,12 @@ class LLMClient:
             mode="inline"
         )
 
-        # 先yield元信息
+        # 先yield元信息（包含完整prompt）
         yield {
             'mode': 'with_citations',
             'citation_format': 'inline',
-            'documents_count': len(documents)
+            'documents_count': len(documents),
+            'full_prompt': prompt
         }
 
         # 流式调用LLM并实时输出
@@ -473,7 +496,8 @@ class LLMClient:
 
     def answer_with_context_stream(self, question: str, context: str,
                                    template: Optional[str] = None,
-                                   conversation_context: Optional[str] = None) -> Iterator[str]:
+                                   conversation_context: Optional[str] = None,
+                                   include_metadata: bool = False) -> Iterator[str]:
         """
         基于上下文回答问题（RAG 核心方法 - 流式版本）
 
@@ -482,6 +506,7 @@ class LLMClient:
             context: str - 检索到的上下文
             template: str - 提示词模板（可选）
             conversation_context: str - 对话历史（可选）
+            include_metadata: bool - 是否在开头yield元数据（包含full_prompt）
 
         返回:
             Iterator[str] - 生成的答案文本流
@@ -501,6 +526,13 @@ class LLMClient:
         else:
             # 构建完整提示词
             full_prompt = template.format(context=context, question=question)
+
+        # 如果需要，先yield元数据
+        if include_metadata:
+            yield {
+                'mode': 'with_context',
+                'full_prompt': full_prompt
+            }
 
         # 流式调用 LLM
         yield from self.stream_generate(full_prompt)
@@ -528,19 +560,29 @@ class LLMClient:
         return answer
 
     def answer_without_context_stream(self, question: str,
-                                      template: Optional[str] = None) -> Iterator[str]:
+                                      template: Optional[str] = None,
+                                      include_metadata: bool = False) -> Iterator[str]:
         """
         无上下文回答问题（使用 LLM 通用知识 - 流式版本）
 
         参数:
             question: str - 用户问题
             template: str - 提示词模板（可选）
+            include_metadata: bool - 是否在开头yield元数据（包含full_prompt）
 
         返回:
             Iterator[str] - 生成的答案文本流
         """
         template = template or NO_CONTEXT_TEMPLATE
         prompt = template.format(question=question)
+
+        # 如果需要，先yield元数据
+        if include_metadata:
+            yield {
+                'mode': 'without_context',
+                'full_prompt': prompt
+            }
+
         yield from self.stream_generate(prompt)
 
     def answer_smart(self, question: str, retrieval_results: List[Dict],
@@ -576,18 +618,32 @@ class LLMClient:
                 'reason': '知识库中未找到相关文档'
             }
 
-        # 获取最相关文档的相似度（距离越小越相似）
-        max_similarity = retrieval_results[0].get('distance', float('inf'))
+        # 获取最相关文档的相似度（兼容 hybrid_score 和 distance 两种模式）
+        best = retrieval_results[0]
+        if best.get('hybrid_score') is not None:
+            best_score = best['hybrid_score']
+            is_relevant = best_score >= (1.0 - threshold)
+            score_repr = f"hybrid_score={best_score:.3f}"
+        else:
+            try:
+                best_score = float(best.get('distance', float('inf')))
+            except (TypeError, ValueError):
+                best_score = float('inf')
+            is_relevant = best_score < threshold
+            score_repr = f"distance={best_score:.3f}"
 
         # 根据阈值判断
-        if max_similarity < threshold:
+        if is_relevant:
             # 有可靠文档，使用文档回答
-            # 组合上下文
             context_parts = []
             relevant_count = 0
             for i, result in enumerate(retrieval_results, 1):
-                # 只使用相似度高于阈值的文档
-                if result.get('distance', float('inf')) < threshold:
+                # 只使用相似度高于阈值的文档（兼容两种模式）
+                if result.get('hybrid_score') is not None:
+                    doc_relevant = result.get('hybrid_score', 0) >= (1.0 - threshold)
+                else:
+                    doc_relevant = (result.get('distance') or float('inf')) < threshold
+                if doc_relevant:
                     meta = result['metadata']
                     doc = result['document']
                     context_parts.append(
@@ -602,9 +658,9 @@ class LLMClient:
             return {
                 'answer': answer,
                 'mode': 'with_context',
-                'max_similarity': max_similarity,
+                'max_similarity': best_score,
                 'relevant_docs_count': relevant_count,
-                'reason': f'找到 {relevant_count} 个相关文档（相似度 < {threshold}）'
+                'reason': f'找到 {relevant_count} 个相关文档（{score_repr}）'
             }
         else:
             # 没有可靠文档，使用通用知识
@@ -612,9 +668,9 @@ class LLMClient:
             return {
                 'answer': answer,
                 'mode': 'without_context',
-                'max_similarity': max_similarity,
+                'max_similarity': best_score,
                 'relevant_docs_count': 0,
-                'reason': f'文档相关度不足（{max_similarity:.3f} >= {threshold}）'
+                'reason': f'文档相关度不足（{score_repr}）'
             }
 
     def answer_smart_stream(self, question: str, retrieval_results: List[Dict],
@@ -636,27 +692,47 @@ class LLMClient:
 
         # 检查是否有检索结果
         if not retrieval_results:
+            # 构建通用知识prompt
+            template = NO_CONTEXT_TEMPLATE
+            full_prompt = template.format(question=question)
+
             # 先返回元信息
             yield {
                 'mode': 'without_context',
                 'max_similarity': None,
                 'relevant_docs_count': 0,
-                'reason': '知识库中未找到相关文档'
+                'reason': '知识库中未找到相关文档',
+                'full_prompt': full_prompt
             }
             # 然后流式返回答案
             yield from self.answer_without_context_stream(question)
             return
 
-        # 获取最相关文档的相似度
-        max_similarity = retrieval_results[0].get('distance', float('inf'))
+        # 获取最相关文档的相似度（兼容 hybrid_score 和 distance 两种模式）
+        best = retrieval_results[0]
+        if best.get('hybrid_score') is not None:
+            best_score = best['hybrid_score']
+            is_relevant = best_score >= (1.0 - threshold)
+            score_repr = f"hybrid_score={best_score:.3f}"
+        else:
+            try:
+                best_score = float(best.get('distance', float('inf')))
+            except (TypeError, ValueError):
+                best_score = float('inf')
+            is_relevant = best_score < threshold
+            score_repr = f"distance={best_score:.3f}"
 
         # 根据阈值判断
-        if max_similarity < threshold:
+        if is_relevant:
             # 有可靠文档，使用文档回答
             context_parts = []
             relevant_count = 0
             for i, result in enumerate(retrieval_results, 1):
-                if result.get('distance', float('inf')) < threshold:
+                if result.get('hybrid_score') is not None:
+                    doc_relevant = result.get('hybrid_score', 0) >= (1.0 - threshold)
+                else:
+                    doc_relevant = (result.get('distance') or float('inf')) < threshold
+                if doc_relevant:
                     meta = result['metadata']
                     doc = result['document']
                     context_parts.append(
@@ -667,22 +743,39 @@ class LLMClient:
 
             context = "\n".join(context_parts)
 
-            # 先返回元信息
+            # 构建完整prompt（用于返回给前端）
+            template = QUERY_TEMPLATE
+            if conversation_context:
+                full_prompt = f"""{conversation_context}
+
+当前查询的文档内容：
+{context}
+
+用户当前问题：{question}
+
+回答："""
+            else:
+                full_prompt = template.format(context=context, question=question)
+
             yield {
                 'mode': 'with_context',
-                'max_similarity': max_similarity,
+                'max_similarity': best_score,
                 'relevant_docs_count': relevant_count,
-                'reason': f'找到 {relevant_count} 个相关文档（相似度 < {threshold}）'
+                'reason': f'找到 {relevant_count} 个相关文档（{score_repr}）',
+                'full_prompt': full_prompt
             }
-            # 然后流式返回答案
             yield from self.answer_with_context_stream(question, context, conversation_context=conversation_context)
         else:
             # 没有可靠文档，使用通用知识
+            template = NO_CONTEXT_TEMPLATE
+            full_prompt = template.format(question=question)
+
             yield {
                 'mode': 'without_context',
-                'max_similarity': max_similarity,
+                'max_similarity': best_score,
                 'relevant_docs_count': 0,
-                'reason': f'文档相关度不足（{max_similarity:.3f} >= {threshold}）'
+                'reason': f'文档相关度不足（{score_repr}）',
+                'full_prompt': full_prompt
             }
             yield from self.answer_without_context_stream(question)
 

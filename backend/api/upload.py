@@ -10,6 +10,9 @@ import shutil
 from pathlib import Path
 import json
 
+# 文件大小限制：10MB（防止恶意大文件导致 OOM）
+MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
 from rag import DocumentIngestion, VectorDB, Embedder
 from rag.logger import get_logger
 from backend.adapters import StreamingIngestionAdapter
@@ -71,9 +74,15 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                 results.append(file_result)
                 continue
 
-            # 读取文件内容
+            # 读取文件内容（先检查大小）
             content = await file.read()
             file_result["size"] = len(content)
+
+            if len(content) > MAX_FILE_SIZE_BYTES:
+                file_result["error"] = f"文件过大（{len(content) // 1024}KB），上限 10MB"
+                logger.warning(f"拒绝过大文件：{file.filename} ({len(content)} bytes)")
+                results.append(file_result)
+                continue
 
             # 保存到临时文件
             with tempfile.NamedTemporaryFile(
@@ -93,7 +102,8 @@ async def upload_documents(files: List[UploadFile] = File(...)):
 
                 chunk_count = ingestion.ingest_file(
                     temp_path,
-                    category=category
+                    category=category,
+                    original_filename=file.filename  # 🎯 保留原始文件名
                 )
 
                 file_result["chunks"] = chunk_count
@@ -128,6 +138,14 @@ async def upload_documents(files: List[UploadFile] = File(...)):
         f"上传完成：{success_count}/{len(files)} 文件成功，"
         f"生成 {total_chunks} 个 chunks"
     )
+
+    # 刷新 ChatService 中的 BM25 索引缓存
+    if success_count > 0:
+        try:
+            from backend.services.chat_service import get_chat_service
+            get_chat_service().retriever.invalidate_bm25_cache()
+        except Exception:
+            pass
 
     return JSONResponse(
         status_code=status.HTTP_200_OK,
@@ -262,6 +280,13 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
             try:
                 content = await file.read()
 
+                # 检查文件大小
+                if len(content) > MAX_FILE_SIZE_BYTES:
+                    logger.warning(f"拒绝过大文件：{file.filename} ({len(content)} bytes)")
+                    yield f"data: {json.dumps({'type': 'error', 'data': {'filename': file.filename, 'stage': 'file_read', 'message': f'文件过大（{len(content)//1024}KB），上限 10MB'}})}\n\n"
+                    failed_count += 1
+                    continue
+
                 # 创建临时文件
                 with tempfile.NamedTemporaryFile(
                     mode='wb',
@@ -298,6 +323,14 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
                 logger.error(f"处理文件失败：{file.filename} - {e}", exc_info=True)
                 yield f"data: {json.dumps({'type': 'error', 'data': {'filename': file.filename, 'stage': 'file_read', 'message': str(e)}})}\n\n"
                 failed_count += 1
+
+        # 上传完成后，刷新 ChatService 中的 BM25 索引缓存
+        if processed_count > 0:
+            try:
+                from backend.services.chat_service import get_chat_service
+                get_chat_service().retriever.invalidate_bm25_cache()
+            except Exception:
+                pass
 
         # 发送所有文件处理完成事件
         yield f"data: {json.dumps({'type': 'all_complete', 'data': {'total': total_files, 'success': processed_count, 'failed': failed_count}})}\n\n"

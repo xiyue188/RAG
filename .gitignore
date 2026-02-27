@@ -1,3 +1,8 @@
+# 环境变量（含 API Key，严禁提交）
+.env
+.env.local
+.env.*.local
+
 # Python
 __pycache__/
 *.py[cod]
@@ -36,21 +41,46 @@ ENV/
 # Claude Code
 .agents/
 .claude/
+.claude.md
 
-# 环境变量（包含敏感信息）
-.env
+# 临时文档（Claude 自动生成的修复记录，不提交）
+*_GUIDE.md
+*_UPDATE.md
+*_FIX*.md
+*_SUMMARY.md
+BACKEND_*.md
+DOCKER_*.md
+SESSION_*.md
+UI_*.md
+VSCODE_*.md
+RESTART_*.md
+DEPLOYMENT_COMPARISON.md
+test_chunks.json
+test_chunks_output.txt
+Users*.json
 
-# 向量数据库
-chroma_db/
-
-# 日志
+# 日志文件
 *.log
+backend.log
 logs/
+backend/logs/
+
+# 运行时数据（不提交到 git，服务器上单独管理）
+chroma_db/
+data/documents/
 
 # 临时文件
 *.tmp
 .DS_Store
 Thumbs.db
+nul
+
+# 废弃代码
+old_*.py
+frontend/
+frontend_reference/
+test_*.py
+test_*.html
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -63,3 +93,10 @@ models/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Node.js / 前端
+node_modules/
+frontend-vue/node_modules/
+frontend-vue/dist/
+frontend-vue/dist-ssr/
+*.local

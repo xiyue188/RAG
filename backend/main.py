@@ -32,11 +32,11 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     print("=" * 60)
     print("DeepBlue Intelligence API starting...")
-    print(f"  Docs:   http://{BACKEND_HOST}:{BACKEND_PORT}/docs")
-    print(f"  SSE:    http://{BACKEND_HOST}:{BACKEND_PORT}/api/v1/chat/stream")
-    print(f"  REST:   http://{BACKEND_HOST}:{BACKEND_PORT}/api/v1/chat/message")
+    print(f"  Docs:   http://localhost:{BACKEND_PORT}/docs")
+    print(f"  SSE:    http://localhost:{BACKEND_PORT}/api/v1/chat/stream")
+    print(f"  REST:   http://localhost:{BACKEND_PORT}/api/v1/chat/message")
     print(f"  LLM:    {env_info['llm_provider']}")
-    print(f"  Rate Limit: 10 requests/minute per IP")
+    print(f"  Rate Limit: 30 requests/minute per IP")
     print("=" * 60)
     yield
     print("DeepBlue Intelligence API stopped.")
@@ -61,7 +61,7 @@ app.add_middleware(
 )
 
 # 速率限制中间件
-app.add_middleware(RateLimitMiddleware, requests_per_minute=10)
+app.add_middleware(RateLimitMiddleware, requests_per_minute=30)
 
 # 注册路由
 from backend.api import routes, sse, upload

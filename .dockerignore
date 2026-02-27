@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# 日志和数据库
+logs/
+*.log
+chroma_db/
+*.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# 文档和测试
+*.md
+test_*.py
+test_*.html
+tests/
+
+# 环境变量（重要！不要打包到镜像）
+.env
+.env.local
+
+# 临时文件
+*.tmp
+*.bak
+*.old
+
+# Mac
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose.yml
+.dockerignore
+
+# 前端（后端镜像不需要）
+frontend/
+frontend-vue/
+frontend_reference/
+node_modules/
+
+# 脚本（如果不需要）
+scripts/
+old_cli_main.py
+
+# 临时文档文件
+BACKEND_*.md
+DOCKER_*.md
+SESSION_*.md
+UI_*.md
+VSCODE_*.md
+*_GUIDE.md
+test_chunks.json
+nul

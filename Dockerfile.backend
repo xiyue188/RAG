@@ -1,0 +1,56 @@
+# ==================== 多阶段构建 ====================
+# 阶段1：基础镜像
+FROM python:3.10-slim as base
+
+# 设置环境变量
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建非root用户
+RUN useradd -m -u 1000 app && \
+    mkdir -p /app && \
+    chown -R app:app /app
+
+WORKDIR /app
+
+# ==================== 阶段2：依赖安装 ====================
+FROM base as dependencies
+
+# 复制依赖文件
+COPY --chown=app:app requirements.txt .
+
+# 安装Python依赖
+RUN pip install --user --no-warn-script-location -r requirements.txt
+
+# ==================== 阶段3：最终镜像 ====================
+FROM base as final
+
+# 复制Python依赖
+COPY --from=dependencies /home/app/.local /home/app/.local
+
+# 复制应用代码
+COPY --chown=app:app . .
+
+# 更新PATH
+ENV PATH=/home/app/.local/bin:$PATH
+
+# 切换到非root用户
+USER app
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()" || exit 1
+
+# 暴露端口
+EXPOSE 8000
+
+# 启动命令
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

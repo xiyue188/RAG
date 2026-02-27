@@ -22,6 +22,7 @@ SSE_HEADERS = {
 async def _sse_event_generator(
     question: str,
     session_id: str = None,
+    use_retrieval: bool = True,
     enable_multi_query: bool = True,
     enable_rerank: bool = False,
     enable_hybrid: bool = True,
@@ -36,11 +37,12 @@ async def _sse_event_generator(
             session_id = str(uuid.uuid4())
 
         session_id = chat_service.get_or_create_session(session_id)
-        logger.info(f"[SSE] 开始流式对话: {session_id}, 问题: {question}")
+        logger.info(f"[SSE] 开始流式对话: {session_id}, 问题: {question}, use_retrieval: {use_retrieval}")
 
         async for chunk in chat_service.answer_stream(
             session_id=session_id,
             question=question,
+            use_retrieval=use_retrieval,
             enable_multi_query=enable_multi_query,
             enable_rerank=enable_rerank,
             enable_hybrid=enable_hybrid,
@@ -71,6 +73,7 @@ async def chat_stream_post(request: QueryRequest, session_id: str = None):
         _sse_event_generator(
             question=request.question,
             session_id=session_id,
+            use_retrieval=request.use_retrieval,
             enable_multi_query=request.enable_multi_query,
             enable_rerank=request.enable_rerank,
             enable_hybrid=request.enable_hybrid,
@@ -85,6 +88,7 @@ async def chat_stream_post(request: QueryRequest, session_id: str = None):
 async def chat_stream_get(
     question: str,
     session_id: str = None,
+    use_retrieval: bool = True,
     enable_multi_query: bool = True,
     enable_rerank: bool = False,
     enable_hybrid: bool = True,
@@ -100,6 +104,7 @@ async def chat_stream_get(
     const url = '/api/v1/chat/stream-get?' + new URLSearchParams({
         question: '什么是宠物政策？',
         session_id: 'test123',
+        use_retrieval: 'true',
         enable_citation: 'true'
     });
     const eventSource = new EventSource(url);
@@ -117,6 +122,7 @@ async def chat_stream_get(
         _sse_event_generator(
             question=question,
             session_id=session_id,
+            use_retrieval=use_retrieval,
             enable_multi_query=enable_multi_query,
             enable_rerank=enable_rerank,
             enable_hybrid=enable_hybrid,
