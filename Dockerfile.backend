@@ -29,7 +29,8 @@ FROM base as dependencies
 # 复制依赖文件
 COPY --chown=app:app requirements.txt .
 
-# 安装Python依赖（使用清华镜像源，中国服务器提速）
+# 切换到 app 用户再安装，确保包路径在 /home/app/.local
+USER app
 RUN pip install --user --no-warn-script-location \
     -i https://pypi.tuna.tsinghua.edu.cn/simple \
     --trusted-host pypi.tuna.tsinghua.edu.cn \
