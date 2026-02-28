@@ -11,6 +11,7 @@ from datetime import datetime
 class QueryRequest(BaseModel):
     """对话查询请求"""
     question: str = Field(..., description="用户问题", min_length=1, max_length=1000)
+    session_id: Optional[str] = Field(None, description="会话ID（前端生成，用于多轮对话）")
     use_retrieval: bool = Field(True, description="是否使用知识库检索（false则只用通用知识回答）")
     enable_multi_query: bool = Field(True, description="是否启用多查询扩展")
     enable_rerank: bool = Field(False, description="是否启用重排序")

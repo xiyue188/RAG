@@ -63,16 +63,17 @@ async def _sse_event_generator(
 
 
 @router.post("/chat/stream")
-async def chat_stream_post(request: QueryRequest, session_id: str = None):
+async def chat_stream_post(request: QueryRequest):
     """
     SSE流式对话接口（POST版本）
 
     适合前端使用 fetch + ReadableStream 调用。
+    session_id 从请求体中读取（前端通过 JSON body 传递）。
     """
     return StreamingResponse(
         _sse_event_generator(
             question=request.question,
-            session_id=session_id,
+            session_id=request.session_id,
             use_retrieval=request.use_retrieval,
             enable_multi_query=request.enable_multi_query,
             enable_rerank=request.enable_rerank,

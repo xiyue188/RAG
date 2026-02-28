@@ -133,6 +133,36 @@ class ChatService:
                 "data": {"original": question, "resolved": resolved_question}
             }
 
+            # 1.5 对话感知查询增强（实体注入，无需 LLM，快速可靠）
+            # 策略：追问通常很短且模糊，从对话历史中提取实体拼接到查询前
+            # 示例："能查到原因吗" → "船员头晕 能查到原因吗" → 检索命中正确文档
+            retrieval_query = resolved_question
+            if use_retrieval and len(conversation.history) >= 2:
+                q = resolved_question.strip()
+                logger.info(f"[{session_id}] [查询增强] 历史={len(conversation.history)}条, 查询长度={len(q)}, 查询='{q}'")
+                # 仅对短查询（≤20字）注入实体，长查询本身已有足够语义
+                if len(q) <= 20:
+                    entities = conversation.extract_entities()
+                    logger.info(f"[{session_id}] [查询增强] 提取实体={entities}")
+                    if entities:
+                        entity_prefix = " ".join(entities[:3])
+                        retrieval_query = f"{entity_prefix} {q}"
+                        logger.info(f"[{session_id}] [查询增强] 实体注入: '{q}' → '{retrieval_query}'")
+                        yield {
+                            "type": "query_rewritten",
+                            "data": {"original": resolved_question, "rewritten": retrieval_query}
+                        }
+                    else:
+                        # 实体提取失败时回退：直接拼接上一轮用户问题作为上下文
+                        last_user_q = conversation.get_last_user_message()
+                        if last_user_q and last_user_q.strip() != q:
+                            retrieval_query = f"{last_user_q} {q}"
+                            logger.info(f"[{session_id}] [查询增强] 历史拼接(回退): '{q}' → '{retrieval_query}'")
+                            yield {
+                                "type": "query_rewritten",
+                                "data": {"original": resolved_question, "rewritten": retrieval_query}
+                            }
+
             # 2. 检索阶段（如果不使用知识库则跳过）
             results = []
             if use_retrieval:
@@ -145,13 +175,13 @@ class ChatService:
                     logger.info(f"[{session_id}] ✓ 准备发送multi_query_start事件")
                     yield {
                         "type": "multi_query_start",
-                        "data": {"original": resolved_question}
+                        "data": {"original": retrieval_query}
                     }
                     logger.info(f"[{session_id}] ✓ 已发送multi_query_start事件")
 
                 advanced_result = await asyncio.to_thread(
                     self.retriever.retrieve_advanced,
-                    resolved_question,
+                    retrieval_query,
                     enable_multi_query=enable_multi_query,
                     enable_rerank=enable_rerank,
                     enable_hybrid=enable_hybrid

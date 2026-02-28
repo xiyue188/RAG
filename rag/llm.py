@@ -779,9 +779,6 @@ class LLMClient:
             }
             yield from self.answer_without_context_stream(question)
 
-
-
-
 if __name__ == "__main__":
     # 测试代码
     print("=" * 70)
