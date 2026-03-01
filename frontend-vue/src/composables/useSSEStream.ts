@@ -45,7 +45,7 @@ export function useSSEStream() {
         message = 'Embedding query...';
         break;
       case 'embedding_done':
-        message = `Embedding completed (${event.data.dimensions || 0}D vector)`;
+        message = `Embedding completed (${event.data.chunk_count || 0} chunks)`;
         break;
       case 'retrieval_start':
         message = `Searching knowledge base (top ${event.data.top_k || 5})...`;
@@ -88,7 +88,7 @@ export function useSSEStream() {
         break;
       case 'file_received':
         message = `File received: ${event.data.filename || ''}`;
-        details = `Size: ${event.data.size_bytes || 0} bytes`;
+        details = `Size: ${event.data.size || 0} bytes`;
         break;
       case 'parsing_start':
         message = `Parsing: ${event.data.filename || ''}`;
@@ -109,14 +109,14 @@ export function useSSEStream() {
         message = 'Storing vectors...';
         break;
       case 'storing_done':
-        message = `Stored ${event.data.vector_count || 0} vectors`;
+        message = `Stored ${event.data.chunk_count || 0} vectors`;
         break;
       case 'indexing_done':
         message = 'Indexing completed';
         break;
       case 'upload_complete':
         message = `Upload complete: ${event.data.filename || ''}`;
-        details = `Total chunks: ${event.data.total_chunks || 0}`;
+        details = `Total chunks: ${event.data.chunk_count || 0}`;
         break;
       case 'all_complete':
         message = `All uploads complete (${event.data.total_files || 0} files)`;
