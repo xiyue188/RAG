@@ -37,6 +37,34 @@ export function useSSEStream() {
         message = 'Response completed';
         break;
 
+      // 查询解析与增强
+      case 'resolved':
+        message = `Query resolved: ${event.data.resolved || event.data.original || ''}`;
+        break;
+      case 'query_rewritten':
+        message = `Query augmented: "${event.data.original || ''}" → "${event.data.rewritten || ''}"`;
+        break;
+
+      // 多查询扩展
+      case 'multi_query_start':
+        message = `Multi-query expansion: "${event.data.original || ''}"`;
+        break;
+      case 'multi_query_done':
+        message = `Expanded to ${event.data.count || 0} query variants`;
+        details = event.data.variants?.join(' | ') || '';
+        break;
+
+      // 混合检索
+      case 'hybrid_search_start':
+        message = `Hybrid search (vector ${Math.round((event.data.vector_weight || 0.7) * 100)}% + BM25 ${Math.round((event.data.bm25_weight || 0.3) * 100)}%)`;
+        break;
+      case 'bm25_indexing':
+        message = `Building BM25 index (${event.data.doc_count || 0} docs)...`;
+        break;
+      case 'bm25_indexed':
+        message = `BM25 index ready (${event.data.doc_count || 0} docs)`;
+        break;
+
       // 通用事件类型
       case 'query_received':
         message = `Query: ${event.data.question || ''}`;

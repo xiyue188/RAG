@@ -67,6 +67,19 @@ export const SSE_EVENT_TO_STAGE: Record<string, LogEntry['stage']> = {
   'done': 'SYS',
   'error': 'SYS',
 
+  // 查询解析与增强
+  'resolved': 'USER',
+  'query_rewritten': 'USER',
+
+  // 多查询扩展
+  'multi_query_start': 'SEARCH',
+  'multi_query_done': 'SEARCH',
+
+  // 混合检索
+  'hybrid_search_start': 'SEARCH',
+  'bm25_indexing': 'SEARCH',
+  'bm25_indexed': 'SEARCH',
+
   // 查询阶段
   'query_received': 'USER',
   'embedding_start': 'EMBED',
@@ -104,6 +117,10 @@ export const SSE_EVENT_TO_TYPE: Record<string, LogEntry['type']> = {
   'all_complete': 'success',
   'answer_complete': 'success',
   'done': 'success',
+  'bm25_indexed': 'success',
+  'multi_query_done': 'info',
+  'query_rewritten': 'info',
+  'hybrid_search_start': 'info',
   'generation_chunk': 'process',
   'answer_chunk': 'process',
   'embedding_progress': 'process'
