@@ -47,7 +47,7 @@ export function useSSEStream() {
 
       // 多查询扩展
       case 'multi_query_start':
-        message = `Multi-query expansion: "${event.data.original || ''}"`;
+        message = `Expanding into multiple queries: "${event.data.original || ''}"`;
         break;
       case 'multi_query_done':
         message = `Expanded to ${event.data.count || 0} query variants`;

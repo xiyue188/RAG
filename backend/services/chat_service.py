@@ -170,8 +170,8 @@ class ChatService:
                 yield {"type": "retrieval_status", "data": {"status": "searching"}}
                 logger.info(f"[{session_id}] ✓ 发送retrieval_status事件")
 
-                # 2.1 多查询扩展开始
-                if enable_multi_query:
+                # 2.1 多查询扩展开始（hybrid 和 multi_query 互斥，hybrid 优先）
+                if enable_multi_query and not enable_hybrid:
                     logger.info(f"[{session_id}] ✓ 准备发送multi_query_start事件")
                     yield {
                         "type": "multi_query_start",
