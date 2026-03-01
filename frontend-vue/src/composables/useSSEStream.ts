@@ -112,7 +112,7 @@ export function useSSEStream() {
 
       // 上传阶段事件
       case 'upload_start':
-        message = `Starting upload: ${event.data.file_count || 0} file(s)`;
+        message = `Starting upload: ${event.data.total_files || event.data.file_count || 0} file(s)`;
         break;
       case 'file_received':
         message = `File received: ${event.data.filename || ''}`;
@@ -147,7 +147,7 @@ export function useSSEStream() {
         details = `Total chunks: ${event.data.chunk_count || 0}`;
         break;
       case 'all_complete':
-        message = `All uploads complete (${event.data.total_files || 0} files)`;
+        message = `All uploads complete (${event.data.total || event.data.total_files || 0} files, ${event.data.success || 0} succeeded)`;
         break;
 
       case 'error':
