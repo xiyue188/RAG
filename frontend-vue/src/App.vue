@@ -1,39 +1,52 @@
 <template>
-  <div class="flex h-screen w-screen overflow-hidden font-sans bg-deep-950 text-slate-200">
-    <!-- Left: Library (25%) -->
-    <div class="w-1/4 min-w-[320px]">
-      <LibraryPanel
-        :files="files"
-        :highlighted-chunk-ids="highlightedChunkIds"
-        :is-uploading="isUploading"
-        :upload-progress="uploadProgress"
-        @toggle-file="toggleFile"
-        @upload="handleUpload"
-        @delete-file="handleDeleteFile"
-      />
+  <div class="flex flex-col h-screen w-screen overflow-hidden font-sans bg-deep-950 text-slate-200">
+    <!-- Main panels row -->
+    <div class="flex flex-1 overflow-hidden">
+      <!-- Left: Library (25%) -->
+      <div class="w-1/4 min-w-[320px]">
+        <LibraryPanel
+          :files="files"
+          :highlighted-chunk-ids="highlightedChunkIds"
+          :is-uploading="isUploading"
+          :upload-progress="uploadProgress"
+          @toggle-file="toggleFile"
+          @upload="handleUpload"
+          @delete-file="handleDeleteFile"
+        />
+      </div>
+
+      <!-- Center: Chat (45%) -->
+      <div class="flex-1">
+        <ChatPanel
+          :messages="messages"
+          :is-rag-enabled="isRagEnabled"
+          :is-thinking="isThinking"
+          :chunk-map="chunkMap"
+          @toggle-rag="toggleRag"
+          @send-message="handleSendMessage"
+          @citation-hover="handleCitationHover"
+        />
+      </div>
+
+      <!-- Right: Brain (30%) -->
+      <div class="w-[560px]">
+        <BrainPanel
+          :logs="logs"
+          :current-similarity="currentSimilarity"
+          :last-prompt="lastPrompt"
+          :rag-status="currentStatus"
+        />
+      </div>
     </div>
 
-    <!-- Center: Chat (45%) -->
-    <div class="flex-1">
-      <ChatPanel
-        :messages="messages"
-        :is-rag-enabled="isRagEnabled"
-        :is-thinking="isThinking"
-        :chunk-map="chunkMap"
-        @toggle-rag="toggleRag"
-        @send-message="handleSendMessage"
-        @citation-hover="handleCitationHover"
-      />
-    </div>
-
-    <!-- Right: Brain (30%) -->
-    <div class="w-[420px]">
-      <BrainPanel
-        :logs="logs"
-        :current-similarity="currentSimilarity"
-        :last-prompt="lastPrompt"
-        :rag-status="currentStatus"
-      />
+    <!-- ICP 备案号 -->
+    <div class="flex-shrink-0 w-full text-center py-1.5 bg-deep-950 border-t border-slate-800">
+      <a
+        href="http://beian.miit.gov.cn/"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+      >沪ICP备2026007801号-1</a>
     </div>
   </div>
 </template>

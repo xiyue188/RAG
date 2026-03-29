@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 全局字号放大：默认16px → 24px，所有 rem 单位等比缩放 */
+html {
+  font-size: 24px;
+}
+
 /* 自定义全局样式 */
 body {
   margin: 0;

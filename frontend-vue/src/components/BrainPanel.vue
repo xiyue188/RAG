@@ -58,12 +58,12 @@
     </div>
 
     <!-- Log Terminal -->
-    <div ref="logsContainer" class="flex-1 overflow-y-auto p-4 space-y-2 bg-black/40 font-mono">
+    <div ref="logsContainer" class="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-2 bg-black/40 font-mono">
       <div v-for="log in logs" :key="log.id" class="flex gap-2">
         <span class="text-slate-600 shrink-0 text-sm">
           {{ formatTime(log.timestamp) }}
         </span>
-        <div class="flex-1 break-words">
+        <div class="flex-1 break-all min-w-0">
           <span :class="['font-bold mr-2', getStageColor(log.stage)]">
             [{{ log.stage }}]
           </span>

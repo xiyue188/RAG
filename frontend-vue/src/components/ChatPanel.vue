@@ -403,16 +403,18 @@ const parseMessageContent = (
 
 // ─── 自动滚动 ──────────────────────────────────────────────────────────────────
 
-watch(() => props.messages.length, async () => {
+// 深度监听消息内容变化（流式输出时内容在变但数量不变）
+watch(() => props.messages, async () => {
   await nextTick();
-  messagesContainer.value?.scrollTo({ top: messagesContainer.value.scrollHeight, behavior: 'smooth' });
-});
+  const el = messagesContainer.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}, { deep: true });
 
 // ─── 输入处理 ──────────────────────────────────────────────────────────────────
 
 const handleSubmit = () => {
   if (inputText.value.trim() && !props.isThinking) {
-    closeCitationCard(); // 发送新消息时关闭卡片
+    closeCitationCard();
     emit('sendMessage', inputText.value);
     inputText.value = '';
   }
