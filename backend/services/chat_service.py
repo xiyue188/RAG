@@ -168,16 +168,16 @@ class ChatService:
             if use_retrieval:
                 # 2. 高级检索（带详细日志事件）
                 yield {"type": "retrieval_status", "data": {"status": "searching"}}
-                logger.info(f"[{session_id}] ✓ 发送retrieval_status事件")
+                logger.info(f"[{session_id}] 已发送 retrieval_status 事件")
 
                 # 2.1 多查询扩展开始（hybrid 和 multi_query 互斥，hybrid 优先）
                 if enable_multi_query and not enable_hybrid:
-                    logger.info(f"[{session_id}] ✓ 准备发送multi_query_start事件")
+                    logger.info(f"[{session_id}] 准备发送 multi_query_start 事件")
                     yield {
                         "type": "multi_query_start",
                         "data": {"original": retrieval_query}
                     }
-                    logger.info(f"[{session_id}] ✓ 已发送multi_query_start事件")
+                    logger.info(f"[{session_id}] 已发送 multi_query_start 事件")
 
                 advanced_result = await asyncio.to_thread(
                     self.retriever.retrieve_advanced,
@@ -318,6 +318,22 @@ class ChatService:
 
                 if citations:
                     yield {"type": "citations", "data": {"citations": citations}}
+
+                if not full_answer.strip():
+                    logger.warning(
+                        f"[{session_id}] 引用流式生成完成但答案为空，切换到非流式补偿生成"
+                    )
+                    fallback_text = await asyncio.to_thread(
+                        self.llm.generate,
+                        full_prompt,
+                    )
+                    fallback_text = (fallback_text or "").strip()
+
+                    if fallback_text:
+                        full_answer = fallback_text
+                        yield {"type": "answer_chunk", "data": {"content": fallback_text}}
+                    else:
+                        raise RuntimeError("LLM 生成完成，但返回内容为空，请检查当前模型配置。")
             else:
                 # 使用智能模式（混合式RAG：有好结果用文档，无结果或差结果用通用知识）
                 logger.info(f"[{session_id}] 使用智能模式（混合式RAG）")
