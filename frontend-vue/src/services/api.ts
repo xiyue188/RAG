@@ -31,7 +31,7 @@ class ApiService {
    * 删除指定文档
    */
   async deleteDocument(docId: string): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/documents/${docId}`, {
+    const response = await fetch(`${this.baseUrl}/documents/${encodeURIComponent(docId)}`, {
       method: 'DELETE'
     });
     if (!response.ok) {
