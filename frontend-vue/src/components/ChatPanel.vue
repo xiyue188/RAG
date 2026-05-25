@@ -79,8 +79,7 @@
             <template v-for="(part, i) in parseMessageContent(msg.content, msg.citations, msg.citationDetails, props.chunkMap)" :key="i">
               <span
                 v-if="part.type === 'text'"
-                v-html="part.content"
-              />
+              >{{ part.content }}</span>
               <!-- 来源角标：可点击，弹出悬浮卡片 -->
               <span
                 v-else

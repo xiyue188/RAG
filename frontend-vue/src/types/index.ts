@@ -61,15 +61,22 @@ export enum RagStatus {
 
 // SSE 事件类型
 export type SSEEventType =
-  // 查询阶段事件（17种）
+  // 对话阶段事件
+  | 'connected' | 'resolved' | 'query_rewritten'
+  | 'retrieval_status' | 'multi_query_start' | 'multi_query_done'
+  | 'hybrid_search_start' | 'bm25_indexing' | 'bm25_indexed'
+  | 'retrieval_results' | 'retrieval_done'
+  | 'rerank_start' | 'rerank_done'
+  | 'generation_start' | 'answer_chunk' | 'citations' | 'done'
+  // 兼容旧事件名称
   | 'query_received' | 'session_start' | 'conversation_context_loaded'
   | 'hybrid_check_start' | 'query_rewrite_start' | 'query_rewrite_done'
-  | 'embedding_start' | 'embedding_done' | 'retrieval_start' | 'retrieval_done'
-  | 'rerank_start' | 'rerank_done' | 'generation_start' | 'generation_chunk'
-  | 'generation_done' | 'citation_generated' | 'answer_complete'
-  // 摄入阶段事件（14种）
+  | 'embedding_start' | 'embedding_done' | 'retrieval_start'
+  | 'generation_chunk' | 'generation_done' | 'citation_generated' | 'answer_complete'
+  // 摄入阶段事件
   | 'upload_start' | 'file_received' | 'parsing_start' | 'parsing_done'
-  | 'chunking_start' | 'chunking_done' | 'embedding_start_ingestion'
+  | 'chunking_start' | 'chunking_done' | 'file_skipped'
+  | 'embedding_start_ingestion'
   | 'embedding_progress' | 'embedding_done_ingestion' | 'storing_start'
   | 'storing_done' | 'indexing_done' | 'upload_complete' | 'all_complete'
   | 'error';

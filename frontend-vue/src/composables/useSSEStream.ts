@@ -1,14 +1,15 @@
 import { ref, type Ref } from 'vue';
-import type { SSEEvent, LogEntry, RagStatus } from '@/types';
+import { RagStatus, type SSEEvent, type LogEntry } from '@/types';
 import { SSE_EVENT_TO_STAGE, SSE_EVENT_TO_TYPE } from '@/constants';
+
+const isStreaming = ref(false);
+const currentStatus: Ref<RagStatus> = ref(RagStatus.IDLE);
+let idleTimer: number | undefined;
 
 /**
  * SSE 流处理 Composable
  */
 export function useSSEStream() {
-  const isStreaming = ref(false);
-  const currentStatus: Ref<RagStatus> = ref('IDLE' as RagStatus);
-
   /**
    * 将 SSE 事件转换为日志条目
    */
@@ -35,6 +36,10 @@ export function useSSEStream() {
         break;
       case 'done':
         message = 'Response completed';
+        break;
+      case 'file_skipped':
+        message = `Skipped file: ${event.data.filename || ''}`;
+        details = event.data.reason || '';
         break;
 
       // 查询解析与增强
@@ -87,7 +92,10 @@ export function useSSEStream() {
         message = `Retrieved ${results.length} results (total: ${event.data.total || 0})`;
         if (results.length > 0) {
           const top = results[0];
-          details = `Top match: ${top.file} (similarity: ${(1 - (top.distance || 0)).toFixed(2)}, score: ${(top.score || 0).toFixed(2)})`;
+          const similarity = top.score !== undefined
+            ? top.score
+            : Math.max(0, 1 - ((top.distance || 0) / 2));
+          details = `Top match: ${top.file} (similarity: ${similarity.toFixed(2)}, score: ${(top.score || 0).toFixed(2)})`;
         }
         break;
       case 'rerank_start':
@@ -151,7 +159,7 @@ export function useSSEStream() {
         break;
 
       case 'error':
-        message = `Error: ${event.data.error || 'Unknown error'}`;
+        message = `Error: ${event.data.message || event.data.error || 'Unknown error'}`;
         details = event.data.detail || '';
         break;
 
@@ -173,18 +181,24 @@ export function useSSEStream() {
    * 根据事件类型更新 RAG 状态
    */
   const updateStatusFromEvent = (eventType: string) => {
+    if (idleTimer) {
+      window.clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+
     if (eventType.includes('embedding')) {
-      currentStatus.value = 'EMBEDDING';
+      currentStatus.value = RagStatus.EMBEDDING;
     } else if (eventType.includes('retrieval') || eventType.includes('search')) {
-      currentStatus.value = 'SEARCHING';
-    } else if (eventType.includes('generation') || eventType.includes('generating')) {
-      currentStatus.value = 'GENERATING';
+      currentStatus.value = RagStatus.SEARCHING;
+    } else if (eventType.includes('generation') || eventType.includes('generating') || eventType === 'answer_chunk') {
+      currentStatus.value = RagStatus.GENERATING;
     } else if (eventType.includes('upload')) {
-      currentStatus.value = 'UPLOADING';
-    } else if (eventType === 'answer_complete' || eventType === 'all_complete') {
-      currentStatus.value = 'COMPLETE';
-      setTimeout(() => {
-        currentStatus.value = 'IDLE';
+      currentStatus.value = RagStatus.UPLOADING;
+    } else if (eventType === 'done' || eventType === 'answer_complete' || eventType === 'all_complete' || eventType === 'error') {
+      currentStatus.value = RagStatus.COMPLETE;
+      idleTimer = window.setTimeout(() => {
+        currentStatus.value = RagStatus.IDLE;
+        idleTimer = undefined;
       }, 2000);
     }
   };
