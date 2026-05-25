@@ -6,19 +6,20 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from typing import List
 import tempfile
-import shutil
 from pathlib import Path
 import json
 
 # 文件大小限制：10MB（防止恶意大文件导致 OOM）
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
+from config import SUPPORTED_FILE_TYPES
 from rag import DocumentIngestion, VectorDB, Embedder
 from rag.logger import get_logger
 from backend.adapters import StreamingIngestionAdapter
 
 logger = get_logger(__name__)
 router = APIRouter()
+SUPPORTED_UPLOAD_TYPES = {ext.lower() for ext in SUPPORTED_FILE_TYPES}
 
 # 初始化摄入器（全局单例）
 _ingestion_instance = None
@@ -68,7 +69,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
         try:
             # 检查文件类型
             file_ext = Path(file.filename).suffix.lower()
-            if file_ext not in [".md", ".txt"]:
+            if file_ext not in SUPPORTED_UPLOAD_TYPES:
                 file_result["error"] = f"不支持的文件格式：{file_ext}"
                 logger.warning(f"跳过不支持的文件：{file.filename}")
                 results.append(file_result)
@@ -103,7 +104,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                 chunk_count = ingestion.ingest_file(
                     temp_path,
                     category=category,
-                    original_filename=file.filename  # 🎯 保留原始文件名
+                    original_filename=file.filename
                 )
 
                 file_result["chunks"] = chunk_count
@@ -152,83 +153,6 @@ async def upload_documents(files: List[UploadFile] = File(...)):
         content=response
     )
 
-
-@router.get("/documents", summary="获取文档列表")
-async def list_documents():
-    """获取已上传的文档列表"""
-    try:
-        ingestion = get_ingestion()
-        collection = ingestion.vectordb.get_collection()
-        results = collection.get(include=["metadatas"])
-
-        documents = []
-        seen_files = set()
-
-        for metadata in results.get("metadatas", []):
-            file = metadata.get("file", "unknown")
-            if file not in seen_files:
-                documents.append({
-                    "file": file,
-                    "category": metadata.get("category", "unknown"),
-                })
-                seen_files.add(file)
-
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "documents": documents,
-                "total": len(documents)
-            }
-        )
-
-    except Exception as e:
-        logger.error(f"获取文档列表失败：{e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/documents/{filename}", summary="删除文档")
-async def delete_document(filename: str):
-    """删除指定文档的所有块"""
-    try:
-        ingestion = get_ingestion()
-        collection = ingestion.vectordb.get_collection()
-
-        # 查找该文件的所有块ID
-        results = collection.get(
-            where={"file": filename},
-            include=["metadatas"]
-        )
-
-        ids_to_delete = results.get("ids", [])
-
-        if not ids_to_delete:
-            raise HTTPException(
-                status_code=404,
-                detail=f"文档不存在：{filename}"
-            )
-
-        # 删除
-        collection.delete(ids=ids_to_delete)
-
-        logger.info(f"已删除文档：{filename} ({len(ids_to_delete)} chunks)")
-
-        return JSONResponse(
-            status_code=status.HTTP_200_OK,
-            content={
-                "success": True,
-                "filename": filename,
-                "chunks_deleted": len(ids_to_delete)
-            }
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"删除文档失败：{e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ========== Phase 2: SSE 流式上传 ==========
 
 @router.post("/documents/upload/stream", summary="上传文档（SSE 流式版本）")
 async def upload_documents_stream(files: List[UploadFile] = File(...)):
@@ -283,7 +207,7 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
             file_ext = fd["ext"]
 
             # 检查文件类型
-            if file_ext not in [".md", ".txt"]:
+            if file_ext not in SUPPORTED_UPLOAD_TYPES:
                 logger.warning(f"跳过不支持的文件：{filename}")
                 yield f"data: {json.dumps({'type': 'file_skipped', 'data': {'filename': filename, 'reason': f'不支持的文件格式：{file_ext}'}})}\n\n"
                 failed_count += 1

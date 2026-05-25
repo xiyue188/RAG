@@ -13,13 +13,13 @@ router = APIRouter()
 
 
 @router.post("/chat/message", response_model=QueryResponse, summary="发送对话消息（非流式）")
-async def send_message(request: QueryRequest, session_id: str = None):
+async def send_message(request: QueryRequest):
     """
     非流式对话接口，收集完整结果后返回。
     """
     try:
         chat_service = get_chat_service()
-        session_id = chat_service.get_or_create_session(session_id)
+        session_id = chat_service.get_or_create_session(request.session_id)
 
         resolved_question = None
         answer_chunks = []
@@ -28,6 +28,7 @@ async def send_message(request: QueryRequest, session_id: str = None):
         async for chunk in chat_service.answer_stream(
             session_id=session_id,
             question=request.question,
+            use_retrieval=request.use_retrieval,
             enable_multi_query=request.enable_multi_query,
             enable_rerank=request.enable_rerank,
             enable_hybrid=request.enable_hybrid,
@@ -175,6 +176,11 @@ async def delete_document(file_name: str):
 
         # 删除所有相关 chunks
         collection.delete(ids=chunk_ids)
+
+        try:
+            get_chat_service().retriever.invalidate_bm25_cache()
+        except Exception:
+            logger.debug("刷新 BM25 缓存失败，忽略并继续", exc_info=True)
 
         logger.info(f"已删除文档: {file_name}, 共 {len(chunk_ids)} 个切片")
 

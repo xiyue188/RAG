@@ -112,6 +112,17 @@ class VectorDB:
         if self.collection is None:
             self.get_collection()
 
+        collection_count = self.collection.count()
+        if collection_count == 0:
+            return {
+                "ids": [[] for _ in query_embeddings],
+                "documents": [[] for _ in query_embeddings],
+                "metadatas": [[] for _ in query_embeddings],
+                "distances": [[] for _ in query_embeddings],
+            }
+
+        n_results = min(n_results, collection_count)
+
         return self.collection.query(
             query_embeddings=query_embeddings,
             n_results=n_results,
@@ -171,6 +182,21 @@ class VectorDB:
             self.get_collection()
 
         self.collection.delete(ids=ids, where=where)
+
+    def delete_by_file(self, file_name: str) -> int:
+        """删除某个源文件对应的所有切片，返回删除数量。"""
+        if self.collection is None:
+            self.get_collection()
+
+        results = self.collection.get(
+            where={"file": file_name},
+            include=["metadatas"],
+        )
+        ids = results.get("ids", [])
+        if ids:
+            self.collection.delete(ids=ids)
+            logger.info(f"已清理旧文档切片: {file_name} ({len(ids)} chunks)")
+        return len(ids)
 
     def count(self):
         """获取文档数量"""

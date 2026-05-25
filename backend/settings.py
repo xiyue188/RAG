@@ -16,13 +16,13 @@ BACKEND_HOST = "0.0.0.0"
 BACKEND_PORT = 8000
 
 # CORS配置
-# 生产部署：在 .env 中设置 ALLOWED_ORIGINS，用逗号分隔多个域名
+# 外部访问：在 .env 中设置 ALLOWED_ORIGINS，用逗号分隔多个域名
 # 例：ALLOWED_ORIGINS=http://your-server-ip,https://your-domain.com
 # 开发环境：不设置则默认允许常用本地地址
 _allowed_origins_env = os.environ.get("ALLOWED_ORIGINS", "")
 
 if _allowed_origins_env:
-    # 生产模式：从环境变量读取，精确控制
+    # 从环境变量读取，精确控制允许访问的来源
     CORS_ORIGINS = [origin.strip() for origin in _allowed_origins_env.split(",") if origin.strip()]
 else:
     # 开发模式：允许本地常用端口

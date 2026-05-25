@@ -47,6 +47,7 @@ class DocumentInfo(BaseModel):
 
 class CitationInfo(BaseModel):
     """引用信息"""
+    chunk_id: Optional[str] = Field(None, description="向量库切片ID")
     doc_id: str = Field(..., description="文档ID")
     file: str = Field(..., description="文件名")
     category: str = Field(..., description="分类")

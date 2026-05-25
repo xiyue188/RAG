@@ -14,8 +14,8 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from rag import DocumentIngestion
 from rag.chunker import chunk_with_metadata
+from rag.ingestion import build_document_id, read_document_file
 from rag.logger import get_logger
-from config import ENCODING
 
 logger = get_logger(__name__)
 
@@ -105,8 +105,7 @@ class StreamingIngestionAdapter:
             # 读取文件内容
             await asyncio.sleep(0)  # 让出控制权，避免阻塞事件循环
             try:
-                with open(file_path, 'r', encoding=ENCODING) as f:
-                    content = f.read()
+                content = read_document_file(file_path_obj)
             except UnicodeDecodeError as e:
                 logger.error(f"[摄入] 编码错误: {filename} - {e}")
                 yield {
@@ -141,6 +140,18 @@ class StreamingIngestionAdapter:
             chunks = [pair[0] for pair in chunk_pairs]
             chunk_metas = [pair[1] for pair in chunk_pairs]
             chunk_count = len(chunks)
+
+            if chunk_count == 0:
+                logger.warning(f"[摄入] 文件没有可索引内容: {filename}")
+                yield {
+                    "type": "error",
+                    "data": {
+                        "filename": filename,
+                        "stage": "chunking",
+                        "message": "文件没有可索引内容"
+                    }
+                }
+                return
 
             yield {
                 "type": "chunking_done",
@@ -212,12 +223,14 @@ class StreamingIngestionAdapter:
             await asyncio.sleep(0)
 
             # 准备数据：base 元数据 + 每块的 header 元数据合并
-            file_stem = Path(filename).stem
-            ids = [f"{file_stem}_chunk_{i}" for i in range(chunk_count)]
+            doc_id = build_document_id(filename, category)
+            ids = [f"{doc_id}_chunk_{i}" for i in range(chunk_count)]
             metadatas = [
                 {"file": filename, "category": category, **chunk_metas[i]}
                 for i in range(chunk_count)
             ]
+
+            self.ingestion.vectordb.delete_by_file(filename)
 
             # 调用核心模块的存储方法
             self.ingestion.vectordb.add(

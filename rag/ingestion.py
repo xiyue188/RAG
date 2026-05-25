@@ -4,15 +4,49 @@
 """
 
 import sys
+import hashlib
+import re
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from .chunker import chunk_text, chunk_text_semantic, chunk_with_metadata
+from .chunker import chunk_with_metadata
 from .embedder import Embedder
 from .vectordb import VectorDB
 from config import DATA_DIR, SUPPORTED_FILE_TYPES, ENCODING
 from typing import Optional, Dict, List
 from tqdm import tqdm
+
+
+def read_document_file(file_path: Path) -> str:
+    """按扩展名读取文档文本，供同步和流式摄入共用。"""
+    suffix = file_path.suffix.lower()
+
+    if suffix in {".md", ".txt"}:
+        return file_path.read_text(encoding=ENCODING)
+
+    if suffix == ".pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(file_path))
+        pages = [(page.extract_text() or "").strip() for page in reader.pages]
+        return "\n\n".join(page for page in pages if page)
+
+    if suffix == ".docx":
+        from docx import Document
+
+        document = Document(str(file_path))
+        paragraphs = [p.text.strip() for p in document.paragraphs if p.text.strip()]
+        return "\n\n".join(paragraphs)
+
+    raise ValueError(f"不支持的文件类型: {suffix}")
+
+
+def build_document_id(filename: str, category: str = "uncategorized") -> str:
+    """生成稳定且安全的文档 ID 前缀，避免同名文件或特殊字符导致冲突。"""
+    stem = Path(filename).stem
+    safe_stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._") or "document"
+    digest = hashlib.sha1(f"{category}:{filename}".encode("utf-8")).hexdigest()[:8]
+    return f"{safe_stem}_{digest}"
 
 
 class DocumentIngestion:
@@ -38,7 +72,8 @@ class DocumentIngestion:
 
     def ingest_text(self, text: str, doc_id: str,
                     metadata: Optional[Dict] = None,
-                    chunk_size: int = None, chunk_overlap: int = None):
+                    chunk_size: int = None, chunk_overlap: int = None,
+                    replace_existing: bool = False):
         """
         摄入单个文本
 
@@ -52,8 +87,16 @@ class DocumentIngestion:
         返回:
             int - 添加的块数量
         """
-        # 1. 分块（🎯 SOTA：结构感知切分 + header 元数据）
-        chunk_pairs = chunk_with_metadata(text, size=chunk_size, overlap=chunk_overlap)
+        if not text or not text.strip():
+            return 0
+
+        # 1. 分块（结构感知切分 + header 元数据）
+        chunk_pairs = [
+            pair for pair in chunk_with_metadata(text, size=chunk_size, overlap=chunk_overlap)
+            if pair[0].strip()
+        ]
+        if not chunk_pairs:
+            return 0
 
         # 2. 向量化（只传文本部分）
         chunks = [pair[0] for pair in chunk_pairs]
@@ -65,6 +108,9 @@ class DocumentIngestion:
         metadatas = [{**base_meta, **pair[1]} for pair in chunk_pairs]
 
         # 4. 入库
+        if replace_existing and base_meta.get("file"):
+            self.vectordb.delete_by_file(base_meta["file"])
+
         self.vectordb.add(
             ids=ids,
             embeddings=embeddings,
@@ -90,19 +136,18 @@ class DocumentIngestion:
         file_path = Path(file_path)
 
         # 检查文件类型
-        if file_path.suffix not in SUPPORTED_FILE_TYPES:
+        if file_path.suffix.lower() not in SUPPORTED_FILE_TYPES:
             print(f"⚠ 跳过不支持的文件类型: {file_path}")
             return 0
 
         # 读取文件
         try:
-            with open(file_path, 'r', encoding=ENCODING) as f:
-                content = f.read()
+            content = read_document_file(file_path)
         except Exception as e:
             print(f"✗ 读取文件失败 {file_path}: {e}")
             return 0
 
-        # 准备元数据（🎯 使用原始文件名而非临时文件名）
+        # 准备元数据，上传临时文件时使用原始文件名。
         display_name = original_filename or file_path.name
         metadata = {
             "file": display_name,
@@ -110,8 +155,13 @@ class DocumentIngestion:
         }
 
         # 摄入
-        doc_id = Path(display_name).stem  # 使用原始文件名（不含扩展名）
-        chunk_count = self.ingest_text(content, doc_id, metadata)
+        doc_id = build_document_id(display_name, metadata["category"])
+        chunk_count = self.ingest_text(
+            content,
+            doc_id,
+            metadata,
+            replace_existing=True,
+        )
 
         return chunk_count
 
