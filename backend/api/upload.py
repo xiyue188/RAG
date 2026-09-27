@@ -1,5 +1,11 @@
 """
 文档上传 API
+
+两种上传模式：
+- 同步：POST /documents/upload — 等摄入完成再返回，适合小文件
+- 流式：POST /documents/upload/stream — SSE 进度流，适合前端实时反馈
+- 异步：POST /documents/upload/async — 立即返回 task_id，后台处理（T6 新增）
+  配合 GET /documents/tasks/{task_id} 查询状态
 """
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, status
@@ -8,6 +14,7 @@ from typing import List
 import asyncio
 import logging
 import tempfile
+import uuid
 from pathlib import Path
 import json
 
@@ -301,4 +308,131 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
             "X-Accel-Buffering": "no"
         }
     )
+
+
+# ============================================================
+# T6：异步上传（立即返回 task_id，后台摄入）
+# ============================================================
+
+@router.post("/documents/upload/async", summary="异步上传文档（立即返回 task_id）")
+async def upload_documents_async(files: List[UploadFile] = File(...)):
+    """上传文档并在后台异步摄入。
+
+    立即返回 `task_id` 列表，客户端通过
+    `GET /api/v1/documents/tasks/{task_id}` 轮询状态。
+
+    **适用场景**：大文件（5MB+）或批量上传时避免请求超时。
+
+    返回格式：
+    ```json
+    {"tasks": [{"task_id": "...", "filename": "...", "status": "pending"|"error", "error": null}]}
+    ```
+    """
+    from backend.db.session import session_scope
+    from backend.repositories import IngestTaskRepository
+    from backend.services import ingest_service
+
+    results = []
+    for file in files:
+        file_ext = Path(file.filename).suffix.lower()
+
+        # 类型校验
+        if file_ext not in SUPPORTED_UPLOAD_TYPES:
+            results.append({
+                "task_id": None,
+                "filename": file.filename,
+                "status": "error",
+                "error": f"不支持的文件格式：{file_ext}",
+            })
+            continue
+
+        # 读取并校验大小
+        content = await file.read()
+        size = len(content)
+        if size > MAX_FILE_SIZE_BYTES:
+            results.append({
+                "task_id": None,
+                "filename": file.filename,
+                "status": "error",
+                "error": f"文件过大（{size // 1024}KB），上限 10MB",
+            })
+            continue
+
+        # 写临时文件（阻塞 I/O 放线程池）
+        task_id = str(uuid.uuid4())
+        temp_path = await asyncio.to_thread(_write_temp_file, content, file_ext)
+        del content  # 尽早释放内存
+
+        # 在 PG 建任务行
+        async with session_scope() as s:
+            await IngestTaskRepository(s).create(
+                filename=file.filename,
+                size_bytes=size,
+                category="uploaded",
+                task_id=task_id,
+            )
+
+        # 入队，后台 worker 会取走执行
+        await ingest_service.enqueue(task_id, temp_path, file.filename)
+
+        results.append({
+            "task_id": task_id,
+            "filename": file.filename,
+            "status": "pending",
+            "error": None,
+        })
+        logger.info("async upload queued: %s → task_id=%s", file.filename, task_id)
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={"tasks": results},
+    )
+
+
+@router.get("/documents/tasks/{task_id}", summary="查询异步摄入任务状态")
+async def get_ingest_task(task_id: str):
+    """查询异步摄入任务的状态与进度。
+
+    返回格式：
+    ```json
+    {
+      "task_id": "...",
+      "filename": "...",
+      "status": "pending|running|done|error",
+      "chunk_count": 42,
+      "error": null,
+      "progress": {"stage": "embedding", "progress": "42.0", "message": "..."}
+    }
+    ```
+
+    `progress` 从 Redis 读取（高频更新），`status` 从 PG 读取（权威终态）。
+    Redis 不可用时 `progress` 为空字典。
+    """
+    from backend.db.session import session_scope
+    from backend.repositories import IngestTaskRepository
+    from backend.cache import redis_client
+
+    async with session_scope() as s:
+        task = await IngestTaskRepository(s).get(task_id)
+
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"任务 {task_id} 不存在",
+        )
+
+    # 读 Redis 进度（不可用时返回空字典，不报错）
+    progress = await redis_client.hgetall(f"ingest:{task_id}")
+
+    return {
+        "task_id": task.id,
+        "filename": task.filename,
+        "size_bytes": task.size_bytes,
+        "status": task.status,
+        "chunk_count": task.chunk_count,
+        "error": task.error,
+        "created_at": task.created_at.isoformat(),
+        "finished_at": task.finished_at.isoformat() if task.finished_at else None,
+        "progress": progress,
+    }
 
