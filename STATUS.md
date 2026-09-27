@@ -4,7 +4,7 @@
 
 ## 当前位置
 
-**阶段**：M2 基础设施 —— **进行中**（T1、T2、T3、T0、T5、T4 完成）
+**阶段**：M2 基础设施 —— **完成** ✓
 **计划书**：`docs/plans/M2-infrastructure.md`
 
 ## 下一步：单一有序清单
@@ -22,8 +22,8 @@
 | 6 | **T5** 会话落库 + run 轨迹落库 | C3/C4/C5：一次问答在 `runs` 留一行，重启后数据仍在 | **完成** |
 | 7 | **T4** 限流迁移 + 缓存防御 | C6/C7/C9 | **完成** |
 | — | **← 停下来 review（当前位置）** | 301 passed；`vue-tsc` exit 0 | |
-| 8 | **T6** 异步摄入 | C8：上传 5MB PDF 立即返回 task_id | 2h |
-| — | **← M2 完成** | | |
+| 8 | **T6** 异步摄入 | C8：上传 5MB PDF 立即返回 task_id | **完成** |
+| — | **← M2 完成** ✓ | 311 passed；`vue-tsc` exit 0 | |
 | 9 | M3 工具 `Protocol` + dispatcher | 加新工具不需改 dispatcher | M3 |
 | 10 | M3 answerability 重做 | `rag/eval/` 能直接跑可答性评测 | M3 |
 | 11 | M5 `LLMProvider` Port + fake | CI 跑通端到端测试且无真实 API 调用 | M5 |

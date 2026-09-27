@@ -1,61 +1,48 @@
-# 交接文档 — 2026-08-19
+# 交接文档 — 2026-09-27
 
 > 覆写此文件时用 `docs/handoffs/LATEST.md`，旧内容不保留。
 > 事实来源：代码与 `git log`；本文件仅导航。
 
-## 本次会话完成的工作
+## M2 完成 ✓
 
-### T5 会话落库 + run 轨迹落库（commit `786dec3`）
+**311 passed，`vue-tsc` exit 0。** 全部 8 个任务完成，M2 收尾。
 
-验收标准 C3/C4/C5 全部满足：
-- [backend/services/chat_service.py](../../backend/services/chat_service.py) 新增 `_persist_run_async`，在 `done` 事件前调用
-- 一个事务写完 sessions / runs / evidence / messages 四张表
-- 6 条新测试，全部通过
+| 任务 | 提交 | 产出 |
+|---|---|---|
+| T0a–T0e | 9bf186f | 阈值单一真相源、删可答性副本、I/O 边缘化、AST 架构测试、文档更正 |
+| T5 | 786dec3 | 会话落库 + run 轨迹落库，6 条测试 |
+| T4 | 374bb75 | 限流→Redis、无界内存修复、XFF 校验，11 条测试 |
+| T6 | 156d87f, 9dd84b2 | 后台摄入服务 + 异步上传端点，10 条测试 |
 
-### T4 限流迁移 + 缓存防御（commit `374bb75`）
+## T6 架构说明
 
-三个已知问题全部修复：
+**两个新端点：**
+- `POST /api/v1/documents/upload/async` — 校验文件、写临时盘、建 `ingest_tasks` 行，立即返回 `{tasks: [{task_id, status: "pending"}]}`（202）
+- `GET /api/v1/documents/tasks/{task_id}` — 从 PG 读权威终态，从 Redis 读实时进度（Redis 不可用时 `progress: {}`）
 
-1. Redis 优先 + 内存降级：[backend/rate_limit.py](../../backend/rate_limit.py) 改用 INCR+EXPIRE 滑动窗口，Redis 不可用时自动切本地内存，不拒绝流量
-2. 内存有界：`defaultdict` 改 `OrderedDict`，上限 10000 IP，超出 FIFO 淘汰
-3. XFF 校验：只有来自 `TRUSTED_PROXY_IPS` 的 TCP 对端才采信 x-forwarded-for
+**[backend/services/ingest_service.py](../../backend/services/ingest_service.py) — 后台 worker：**
+- 进程级 `asyncio.Queue`，lifespan 启动时 `start_worker()`
+- worker 取 `(task_id, temp_path, filename, category)` 元组，调 `StreamingIngestionAdapter` 跑摄入
+- 进度写 `ingest:{task_id}` Redis hash（TTL 1h），不可用时静默
+- 成功：`mark_done`；失败：`mark_error`；完成后 `invalidate_retrieval_caches + bump_kb_version`
+- `reclaim_pending`：进程重启时把孤儿 pending 任务标为 error（临时文件已丢，需重新上传）
 
-[config.py](../../config.py) 新增两个配置项：`RATE_LIMIT_WINDOW_SECONDS`（默认 60）、`TRUSTED_PROXY_IPS`（默认空列表）
+**设计决策：**
+- 不引入 Celery/RQ — 摄入在同进程内，无分布式需求，asyncio.Queue 够用
+- 并发上限 1 个 worker — embedding 是 torch forward pass，多 worker 争线程池槽位无法提速
+- 孤儿任务标 error 而非入队 — 临时文件随重启消失，重跑必然失败，告知用户重新上传更诚实
 
-11 条新测试，**301 passed total**。
+## 未验证
 
-## 当前状态
+C8 的端到端（上传真实 5MB 文件、/health 不中断）未实测，只有单元测试。
+端对端验证需要起服务 + ChromaDB + 嵌入模型，属于 M5 集成测试范围。
 
-**已完成**：T1、T2、T3、T0（五处规则漂移）、T5、T4
+## 下一格：M3
 
-**待做（按顺序）**：T6 异步摄入 → M2 完成
+**下一阶段**：M3 Agentic 编排（状态机、路由、四个工具、dispatcher、citation_verify）
 
-详见 [STATUS.md](../../STATUS.md)。
+M3 开始前建议先做：
+1. `answerability.py` — 第一步（top1-top2 分差规则，无需训练数据）
+2. M3 计划书（`docs/plans/M3-agent.md`）
 
-## 下一格：T6 异步摄入
-
-目标：上传 5MB PDF 立即返回 task_id，不阻塞请求。
-
-基础设施已就绪：
-- `IngestTaskRepository` — pending/running/done/error 状态机，CAS 防双认领
-- `backend/cache/redis_client.py` — `hset_mapping`/`hgetall` 可用于进度写入
-- `upload.py` 两个端点的所有阻塞调用已 offload（T0c）
-
-需要做的：
-1. 新建 `/api/v1/documents/upload/async` 端点，接收文件后写 `ingest_tasks` 行、把实际摄入扔进 `asyncio.create_task` / BackgroundTasks，立即返回 task_id
-2. 新建 `/api/v1/documents/tasks/{task_id}` 查询端点，从 DB 读状态
-3. 进度（embedding_progress 等）写 Redis hash（key = `ingest:{task_id}`，TTL = 1h），前端用 SSE 或轮询读
-
-## T4 关键设计决策
-
-**为什么用固定窗口（INCR+EXPIRE）而非 sorted-set 滑动窗口**：
-
-固定窗口 2 条 Redis 命令；sorted-set 需要 ZADD + ZREMRANGEBYSCORE + ZCARD，写放大更大，TTL 管理更复杂。边界抖动（窗口末尾可能接受 2× 的请求）对这个场景可以接受。
-
-**为什么内存降级用 FIFO 而非 LRU**：
-
-LRU 需要每次命中时更新顺序，与限流写路径耦合。FIFO 淘汰最旧插入的 IP，对扫描器场景足够：扫描器不会持续复用同一 IP，最旧的恰好是最不活跃的。
-
-**XFF 安全默认**：
-
-`TRUSTED_PROXY_IPS` 默认空列表。新部署时不配置代理就不会意外信任伪造的 IP，需要时显式加入。
+详见 [ROADMAP.md](../../docs/ROADMAP.md) M3 节与 [STATUS.md](../../STATUS.md)。
