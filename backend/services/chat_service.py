@@ -8,8 +8,8 @@ import re
 import asyncio
 import queue
 import threading
-from typing import Dict, AsyncIterator, List, Optional
-from datetime import datetime
+from collections import OrderedDict
+from typing import Any, Dict, AsyncIterator, List, Optional
 import time
 
 from rag import Retriever, LLMClient, VectorDB, Embedder
@@ -21,6 +21,13 @@ from rag.logger import get_logger
 from rag.scoring import compute_relevance
 
 logger = get_logger(__name__)
+
+# 内存里保留的最大会话数。内存只是热缓存，真相在 messages 表 ——
+# 被淘汰的会话下次访问时从库里回填，不丢上下文
+from backend.settings import MAX_SESSIONS  # noqa: E402
+
+# 回填时从库里取的消息条数，与 ConversationManager 的 max_turns 对齐
+_HISTORY_TURNS = 20
 
 
 async def _persist_run_async(
@@ -113,6 +120,32 @@ async def _persist_run_async(
         logger.warning("run 落库失败（session=%s），对话不受影响", session_id, exc_info=True)
 
 
+async def _load_history_async(session_id: str, limit: Optional[int]) -> List[Dict[str, Any]]:
+    """从 messages 表读会话历史，按时间正序。
+
+    数据库不可用时返回空列表并记日志：读不到历史只是丢了上下文，
+    不该让整次问答失败。调用方据此退化为一个新会话。
+    """
+    from backend.db.session import session_scope
+    from backend.repositories import SessionRepository
+
+    try:
+        async with session_scope() as db:
+            rows = await SessionRepository(db).history(session_id, limit=limit)
+            return [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "metadata": {"run_id": m.run_id} if m.run_id else {},
+                    "timestamp": m.created_at.isoformat(),
+                }
+                for m in rows
+            ]
+    except Exception:
+        logger.warning("读取会话历史失败（session=%s），按新会话处理", session_id, exc_info=True)
+        return []
+
+
 async def _sync_generator_to_async(sync_gen_factory) -> AsyncIterator:
     """
     将同步生成器转换为异步迭代器。
@@ -153,6 +186,15 @@ class ChatService:
     1. 管理多个用户会话（基于SessionID）
     2. 桥接rag/核心模块（不含业务逻辑）
     3. 提供异步流式输出接口
+
+    ## 会话的两份状态
+
+    - **messages 表**：真相源。每次问答结束由 `_persist_run_async` 写入。
+    - **`self.sessions`**：`ConversationManager` 的热缓存，指代消解与
+      上下文拼接要用它。按 LRU 保留至多 `MAX_SESSIONS` 个，进程重启或被
+      淘汰后，首次访问时从 messages 表回填。
+
+    此前只有内存一份：重启即丢上下文，字典无上限，过期清理方法无人调用。
     """
 
     def __init__(self):
@@ -162,23 +204,44 @@ class ChatService:
         self.llm = LLMClient()
         self.retriever = Retriever(self.vectordb, self.embedder, self.llm)
 
-        self.sessions: Dict[str, ConversationManager] = {}
+        self.sessions: "OrderedDict[str, ConversationManager]" = OrderedDict()
         self.resolvers: Dict[str, ReferenceResolver] = {}
-        self.session_timestamps: Dict[str, datetime] = {}
         logger.info("ChatService初始化完成")
 
-    def get_or_create_session(self, session_id: Optional[str] = None) -> str:
-        if session_id is None:
-            session_id = str(uuid.uuid4())
+    @staticmethod
+    def ensure_session_id(session_id: Optional[str] = None) -> str:
+        """没给就生成一个。不创建内存状态 —— 那由 answer_stream 异步完成，
+        因为可能要从数据库回填，而回填是 I/O，不能在同步方法里做。"""
+        return session_id or str(uuid.uuid4())
 
-        if session_id not in self.sessions:
-            self.sessions[session_id] = ConversationManager(max_turns=20)
-            self.resolvers[session_id] = ReferenceResolver(self.sessions[session_id])
-            self.session_timestamps[session_id] = datetime.now()
-            logger.info(f"初始化会话: {session_id}")
+    async def _get_conversation(self, session_id: str) -> ConversationManager:
+        """取会话上下文：内存命中直接用，否则从 messages 表回填。"""
+        conversation = self.sessions.get(session_id)
+        if conversation is not None:
+            self.sessions.move_to_end(session_id)
+            return conversation
 
-        self.session_timestamps[session_id] = datetime.now()
-        return session_id
+        history = await _load_history_async(session_id, limit=_HISTORY_TURNS)
+        loaded = ConversationManager(max_turns=_HISTORY_TURNS)
+        for turn in history:
+            if turn["role"] == "user":
+                loaded.add_user_message(turn["content"])
+            else:
+                loaded.add_assistant_message(turn["content"])
+
+        # await 期间同一会话的另一个请求可能已经回填并开始写入，
+        # 用 setdefault 保留先到的那份，不覆盖
+        conversation = self.sessions.setdefault(session_id, loaded)
+        self.sessions.move_to_end(session_id)
+        if session_id not in self.resolvers:
+            self.resolvers[session_id] = ReferenceResolver(conversation)
+        if history:
+            logger.info(f"[{session_id}] 从数据库回填 {len(history)} 条历史消息")
+
+        while len(self.sessions) > MAX_SESSIONS:
+            evicted, _ = self.sessions.popitem(last=False)
+            self.resolvers.pop(evicted, None)
+        return conversation
 
     async def answer_stream(
         self,
@@ -214,8 +277,8 @@ class ChatService:
         """
         logger.info(f"[{session_id}] 收到问题: {question}")
 
-        session_id = self.get_or_create_session(session_id)
-        conversation = self.sessions[session_id]
+        session_id = self.ensure_session_id(session_id)
+        conversation = await self._get_conversation(session_id)
         resolver = self.resolvers[session_id]
 
         yield {"type": "connected", "data": {"session_id": session_id}}
@@ -634,30 +697,38 @@ class ChatService:
         if full_prompt:
             yield {"type": "_metadata", "data": {"full_prompt": full_prompt}}
 
-    def get_session_history(self, session_id: str) -> List[Dict]:
-        if session_id not in self.sessions:
-            return []
-        return self.sessions[session_id].history
+    async def get_session_history(self, session_id: str) -> List[Dict[str, Any]]:
+        """完整会话历史，以数据库为准。重启后仍可读（验收 C5）。"""
+        return await _load_history_async(session_id, limit=None)
 
-    def clear_session(self, session_id: str) -> bool:
-        if session_id in self.sessions:
-            del self.sessions[session_id]
-            del self.resolvers[session_id]
-            del self.session_timestamps[session_id]
+    async def clear_session(self, session_id: str) -> bool:
+        """删除会话：内存与数据库都清。返回是否存在过。
+
+        数据库里 messages 随 sessions 级联删除；runs.session_id 是
+        SET NULL —— 执行轨迹保留，可追溯性不随会话删除而丢失。
+        """
+        from backend.db.session import session_scope
+        from backend.repositories import SessionRepository
+
+        in_memory = self.sessions.pop(session_id, None) is not None
+        self.resolvers.pop(session_id, None)
+        async with session_scope() as db:
+            in_db = await SessionRepository(db).clear(session_id)
+        if in_memory or in_db:
             logger.info(f"清空会话: {session_id}")
-            return True
-        return False
+        return in_memory or in_db
 
-    def cleanup_old_sessions(self, timeout_seconds: int = 3600):
-        now = datetime.now()
-        expired = [
-            sid for sid, ts in self.session_timestamps.items()
-            if (now - ts).total_seconds() > timeout_seconds
-        ]
-        for sid in expired:
-            self.clear_session(sid)
-        if expired:
-            logger.info(f"清理了 {len(expired)} 个超时会话")
+    async def count_active_sessions(self, within_seconds: int = 3600) -> int:
+        """近期活跃会话数，以数据库为准；数据库不可用时退回内存计数。"""
+        from backend.db.session import session_scope
+        from backend.repositories import SessionRepository
+
+        try:
+            async with session_scope() as db:
+                return await SessionRepository(db).count_active(within_seconds)
+        except Exception:
+            logger.warning("统计活跃会话失败，退回内存计数", exc_info=True)
+            return len(self.sessions)
 
 
 # 全局单例

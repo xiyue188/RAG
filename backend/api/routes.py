@@ -55,7 +55,7 @@ async def send_message(request: QueryRequest):
     """
     try:
         chat_service = get_chat_service()
-        session_id = chat_service.get_or_create_session(request.session_id)
+        session_id = chat_service.ensure_session_id(request.session_id)
 
         resolved_question = None
         answer_chunks = []
@@ -94,7 +94,7 @@ async def send_message(request: QueryRequest):
 async def get_history(session_id: str):
     try:
         chat_service = get_chat_service()
-        history = chat_service.get_session_history(session_id)
+        history = await chat_service.get_session_history(session_id)
         return {"session_id": session_id, "history": history}
     except Exception as e:
         logger.error(f"获取历史错误: {str(e)}", exc_info=True)
@@ -105,7 +105,7 @@ async def get_history(session_id: str):
 async def clear_session(session_id: str):
     try:
         chat_service = get_chat_service()
-        success = chat_service.clear_session(session_id)
+        success = await chat_service.clear_session(session_id)
         if success:
             return {"message": "会话已清空", "session_id": session_id}
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -187,7 +187,7 @@ async def get_stats():
         stats = await get_document_service().stats()
         return {
             **stats,
-            "active_sessions": len(get_chat_service().sessions),
+            "active_sessions": await get_chat_service().count_active_sessions(),
         }
     except Exception as e:
         logger.error(f"获取统计错误: {str(e)}", exc_info=True)

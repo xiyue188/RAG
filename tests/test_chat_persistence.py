@@ -234,3 +234,116 @@ async def test_first_token_ms_none_when_no_token(db):
     run = next((r for r in runs if r.query == "无首 token 耗时"), None)
     assert run is not None
     assert run.first_token_ms is None
+
+
+# ---------------------------------------------------------------------------
+# 读路径：重启后从 messages 表回填（C5 后半句"会话历史仍可读"）
+#
+# T5 最初只写库不读库：重启后数据在，但对话上下文为空、历史接口读内存，
+# C5 实际不满足。以下用 ChatService.__new__ 构造"重启后的新实例"，
+# 不走 __init__ —— 那会加载 embedding 模型。
+# ---------------------------------------------------------------------------
+
+from collections import OrderedDict
+
+
+def _fresh_service():
+    from backend.services.chat_service import ChatService
+
+    service = ChatService.__new__(ChatService)
+    service.sessions = OrderedDict()
+    service.resolvers = {}
+    return service
+
+
+async def _qa(session_id: str, question: str, answer: str) -> None:
+    await _persist_run_async(
+        session_id=session_id, query=question, route="smart", results=[],
+        full_answer=answer, citations=[], total_ms=1, first_token_ms=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_conversation_rehydrated_after_restart(db):
+    """重启后首次访问会话，上下文从库里按顺序回填，追问不丢前文。"""
+    await _qa("sess-rh", "船员头晕怎么办", "先检查一氧化碳")
+    await _qa("sess-rh", "能查到原因吗", "查通风记录")
+
+    service = _fresh_service()
+    conversation = await service._get_conversation("sess-rh")
+
+    assert [(t.role, t.content) for t in conversation.history] == [
+        ("user", "船员头晕怎么办"), ("assistant", "先检查一氧化碳"),
+        ("user", "能查到原因吗"), ("assistant", "查通风记录"),
+    ]
+    assert conversation.get_last_user_message() == "能查到原因吗"
+    assert "sess-rh" in service.resolvers
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint_reads_database(db):
+    """历史以数据库为准：新实例内存为空，仍能读到完整历史。"""
+    await _qa("sess-hist", "问题", "回答")
+
+    history = await _fresh_service().get_session_history("sess-hist")
+
+    assert [h["role"] for h in history] == ["user", "assistant"]
+    assert history[1]["metadata"]["run_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_memory_sessions_bounded_lru(db, monkeypatch):
+    """内存会话表有上限，淘汰最久未用的；被淘汰的再访问时从库回填。"""
+    import backend.services.chat_service as cs
+
+    monkeypatch.setattr(cs, "MAX_SESSIONS", 2)
+    await _qa("lru-a", "a 的问题", "a 的回答")
+    service = _fresh_service()
+
+    await service._get_conversation("lru-a")
+    await service._get_conversation("lru-b")
+    await service._get_conversation("lru-a")      # a 变成最近使用
+    await service._get_conversation("lru-c")      # 应淘汰 b
+
+    assert list(service.sessions) == ["lru-a", "lru-c"]
+    assert "lru-b" not in service.resolvers
+
+    service.sessions.pop("lru-a")                 # 模拟 a 被淘汰
+    again = await service._get_conversation("lru-a")
+    assert [t.content for t in again.history] == ["a 的问题", "a 的回答"]
+
+
+@pytest.mark.asyncio
+async def test_clear_session_keeps_runs(db):
+    """清空会话删掉消息，但执行轨迹保留（runs.session_id 置 NULL）。"""
+    from backend.db.session import session_scope
+    from backend.repositories import RunRepository
+
+    await _qa("sess-clear", "要删的问题", "要删的回答")
+    service = _fresh_service()
+
+    assert await service.clear_session("sess-clear") is True
+    assert await service.get_session_history("sess-clear") == []
+    assert await service.clear_session("sess-clear") is False
+
+    async with session_scope() as s:
+        runs = await RunRepository(s).list_recent(limit=20)
+    run = next(r for r in runs if r.query == "要删的问题")
+    assert run.session_id is None
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_degrades_when_database_down(db, monkeypatch):
+    """读历史失败时退化为新会话，不让问答失败。"""
+    from contextlib import asynccontextmanager
+    import backend.db.session as db_session_module
+
+    @asynccontextmanager
+    async def _bad_scope():
+        raise RuntimeError("数据库故障（模拟）")
+        yield
+
+    monkeypatch.setattr(db_session_module, "session_scope", _bad_scope)
+
+    conversation = await _fresh_service()._get_conversation("sess-down")
+    assert conversation.history == []

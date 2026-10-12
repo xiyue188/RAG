@@ -32,11 +32,7 @@ async def _sse_event_generator(
     try:
         chat_service = get_chat_service()
 
-        if not session_id:
-            import uuid
-            session_id = str(uuid.uuid4())
-
-        session_id = chat_service.get_or_create_session(session_id)
+        session_id = chat_service.ensure_session_id(session_id)
         logger.info(f"[SSE] 开始流式对话: {session_id}, 问题: {question}, use_retrieval: {use_retrieval}")
 
         async for chunk in chat_service.answer_stream(
