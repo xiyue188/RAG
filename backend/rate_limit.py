@@ -5,15 +5,17 @@
 
 1. **内存态 → Redis 优先，降级为内存。**
    原先的 `defaultdict(deque)` 重启归零，多副本各自计数（N 副本等于配额翻 N 倍）。
-   现在：Redis 可用时用 INCR+EXPIRE 滑动窗口；Redis 不可用时降级为本地内存，
+   现在：Redis 可用时用 INCR+EXPIRE 固定窗口；Redis 不可用时降级为本地内存，
    此时降级为单机限流，行为与原实现一致，不拒绝流量。
 
 2. **无界内存增长修复。**
    原先每个见过的 IP 都建一个 deque 且永不清理：被换 IP 的扫描器会把
    `request_history` 撑到进程 OOM。
-   修法：内存表加上限 `_MAX_TRACKED_IPS`（默认 10000），超出时用
-   `popitem(last=False)` 淘汰最早插入的 IP（等效于 FIFO）——用 OrderedDict
-   而非随机弹 dict，行为可预测。清理过期条目的逻辑仍在，只是兜底。
+   修法：内存表加上限 `_MAX_TRACKED_IPS`（默认 10000），按 LRU 淘汰：
+   每次访问 `move_to_end`，满了 `popitem(last=False)` 弹出最久未访问的 IP。
+   选 LRU 而非 FIFO：扫描器灌入大量新 IP 时，FIFO 会把正在活跃的正常
+   用户也按插入顺序挤出去（其计数随之清零，等于给他重置配额）；LRU 只淘汰
+   最久没来的那些。
 
 3. **XFF 按可信代理校验。**
    原先无条件信任 `x-forwarded-for`，攻击者每个请求伪造一个 IP 即可绕过限流。
@@ -29,7 +31,7 @@ from __future__ import annotations
 
 import time
 from collections import OrderedDict, deque
-from typing import Optional
+from typing import Iterable, Optional
 
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
@@ -38,7 +40,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import config
 from backend.cache import redis_client
 
-# 内存降级表的 IP 数量上限。超出时淘汰最旧的 IP（FIFO）。
+# 内存降级表的 IP 数量上限。超出时淘汰最久未访问的 IP（LRU）。
 # 10000 个 IP × 每条记录约 200 字节 ≈ 2MB，不影响进程内存。
 _MAX_TRACKED_IPS = 10_000
 
@@ -66,26 +68,40 @@ def _get_client_ip(request: Request, trusted_proxies: frozenset[str]) -> str:
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
-    滑动窗口速率限制。
+    速率限制：Redis 固定窗口为主，内存滑动窗口为降级。
 
-    主路径：Redis INCR+EXPIRE（多副本安全，重启后持续）。
-    降级路径：进程内 OrderedDict + deque（单机，有界内存）。
+    主路径：Redis INCR+EXPIRE 固定窗口（多副本共享计数，重启不归零）。
+    降级路径：进程内 OrderedDict + deque 滑动窗口（单机，有界内存，LRU 淘汰）。
+
+    `window_seconds` / `trusted_proxies` 可注入，默认取 config。
+    中间件在第一次请求时才由 Starlette 实例化，测试若靠临时改全局 config
+    传参，改回之后才实例化，参数实际不生效。
     """
 
     # 跳过限流的路径
     _EXEMPT_PATHS = frozenset({"/", "/health", "/docs", "/redoc", "/openapi.json"})
 
-    def __init__(self, app, requests_per_minute: int = 10):
+    def __init__(
+        self,
+        app,
+        requests_per_minute: int = 10,
+        window_seconds: Optional[int] = None,
+        trusted_proxies: Optional[Iterable[str]] = None,
+    ):
         super().__init__(app)
         self.requests_per_minute = requests_per_minute
-        self.window_seconds = config.RATE_LIMIT_WINDOW_SECONDS
-
-        # 可信代理 IP 集合（frozenset 查找 O(1)）
-        self.trusted_proxies: frozenset[str] = frozenset(
-            ip.strip() for ip in config.TRUSTED_PROXY_IPS if ip.strip()
+        self.window_seconds = (
+            window_seconds if window_seconds is not None
+            else config.RATE_LIMIT_WINDOW_SECONDS
         )
 
-        # 降级用的内存表：OrderedDict 保序，便于 FIFO 淘汰
+        # 可信代理 IP 集合（frozenset 查找 O(1)）
+        proxies = trusted_proxies if trusted_proxies is not None else config.TRUSTED_PROXY_IPS
+        self.trusted_proxies: frozenset[str] = frozenset(
+            ip.strip() for ip in proxies if ip.strip()
+        )
+
+        # 降级用的内存表：OrderedDict 保序，便于 LRU 淘汰
         self._mem_table: OrderedDict[str, deque] = OrderedDict()
 
     # ------------------------------------------------------------------
@@ -93,7 +109,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     # ------------------------------------------------------------------
 
     async def _check_redis(self, ip: str) -> Optional[tuple[bool, int]]:
-        """用 Redis INCR+EXPIRE 实现滑动窗口计数。
+        """用 Redis INCR+EXPIRE 实现固定窗口计数。
 
         返回 (is_limited, count)，或 None 表示 Redis 不可用（让调用方降级）。
 
@@ -116,7 +132,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def _check_memory(self, ip: str) -> tuple[bool, int]:
         """本地内存滑动窗口（单机、有界）。
 
-        OrderedDict 保留插入顺序，满额时用 popitem(last=False) 淘汰最旧的 IP。
+        OrderedDict 按访问顺序排列，满额时 popitem(last=False) 淘汰最久未访问的 IP。
         """
         now = time.time()
         cutoff = now - self.window_seconds
