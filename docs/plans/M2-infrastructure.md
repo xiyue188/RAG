@@ -378,14 +378,28 @@ Repository 而非在 service 里直接写 SQL：M4 的面板要复用同一套�
 
 - **修 `request_history` 无界增长**。`defaultdict(deque)` 为每个见过的 IP
   建一条 deque 且永不清理 —— 清理逻辑只在该 IP 再次访问时触发。
-  配合上一条可被打到 OOM。迁到 Redis 后由 `EXPIRE` 自然解决，
-  但**降级路径若回退到内存态，这个问题会跟着回来**，降级时应当直接放行
-  而不是退回内存计数。
+  配合上一条可被打到 OOM。迁到 Redis 后由 `EXPIRE` 自然解决。
 
-#### T4b · 检索缓存接入 `kb_version`
+  **实际实现与本节原计划不同**：原计划是 Redis 不可用时直接放行，理由是
+  "退回内存计数会把无界增长带回来"。实现时选择了退回**有界**内存计数
+  （`OrderedDict` 上限 10000 个 IP，满了淘汰最早插入的）：无界增长的根因
+  是没有上限，加上限即消除；而 Redis 挂掉时仍保留单机级别的保护，比完全
+  放行更稳。代价是多副本下降级期间全局配额放大为 N 倍，见 STATUS 的说明。
 
-- key：`ret:{variant}:{sha1(query)}:{kb_version}`
-- 文档变更后 `INCR kb_version`，旧 key 因前缀不匹配自然失效
+#### T4b · 检索缓存接入 `kb_version` —— **已移出 M2**
+
+收口时决定不在 M2 接入检索缓存（2026-10-12）。理由：
+
+- M1 实测检索 P50 为 15–52ms（不开 rerank），缓存能省的时间远小于
+  一次 LLM 生成，用户感知不到。
+- 缓存会引入一条新的一致性风险（文档变更后返回旧结果），而目前没有任何
+  测试覆盖"变更 → 失效"这条链路的端到端行为。
+- 值得缓存的是 rerank（P50 9.8 秒），但 rerank 是否启用、如何启用本身
+  还是 M3 的未决问题。缓存应在那之后按实际热点设计。
+
+M2 保留的部分：`kb_version` 已在文档变更的唯一入口
+（`DocumentService.invalidate_retrieval_caches`）自增，四条变更路径
+（同步/流式/异步上传、删除）都会触发。将来接入缓存时 key 直接带上它即可。
 
 #### 采用固定窗口而非滑动窗口（明确的 trade-off）
 
@@ -402,10 +416,10 @@ Repository 而非在 service 里直接写 SQL：M4 的面板要复用同一套�
 请求存一个 member 并写 Lua 保证三条命令的原子性。**知道自己选了较弱的方案
 并说得出理由，比默认用了强方案却讲不清区别更有价值。**
 
-#### 缓存三大问题的防御（接入缓存时一起交付，不事后补）
+#### 缓存三大问题的防御（随 T4b 移出 M2；接入缓存时一起交付，不事后补）
 
-当前 `redis_client.py` 没有任何调用点，所以三个问题一个都不存在。
-但 T4b 一旦接入检索缓存就全都成立，且本项目的风险画像与典型 Web 应用不同 ——
+当前没有检索缓存，所以三个问题一个都不存在。
+但一旦接入检索缓存就全都成立，且本项目的风险画像与典型 Web 应用不同 ——
 **这里的"底层"不是一次廉价的数据库查询，而是 CPU 密集的 embedding
 （外加可能 9.8 秒的 rerank）。**
 
@@ -425,6 +439,11 @@ Repository 而非在 service 里直接写 SQL：M4 的面板要复用同一套�
 `chat_service.sessions` 改为读写 PG。历史记录从 `messages` 表加载，
 内存只留当前请求的上下文。
 
+**实际实现**：每次问答结束时一个事务写 sessions / runs / evidence /
+两条 messages（`chat_service._persist_run_async`）。内存里的
+`ConversationManager` 作为热缓存保留，进程重启后首次访问某会话时
+从 `messages` 表回填。
+
 ### T6 · 异步摄入（2h）
 
 - `POST /documents/upload` 立即返回 `task_id`
@@ -432,6 +451,16 @@ Repository 而非在 service 里直接写 SQL：M4 的面板要复用同一套�
   单机部署，Celery 要多一个 broker 和一套部署复杂度）
 - 进度写 Redis，`GET /documents/tasks/{id}/events` 读
 - 完成后 `INCR kb_version`
+
+**实际实现与计划的差异**：
+
+- 新增独立端点 `POST /documents/upload/async`，原同步与 SSE 上传端点保留
+  （前端在用，替换属于前端改造）。
+- 进度用轮询 `GET /documents/tasks/{id}` 而非 SSE `/events`：任务状态以 PG
+  为准、进度以 Redis 为准，一个 JSON 端点合并两者更简单；SSE 留给 M4。
+- 加了清扫器：`pending` / `running` 超过 `INGEST_STALE_SECONDS` 标 error。
+  临时文件路径只在内存队列里，进程重启后任务无法继续，只能让用户重传。
+- **单副本设计**。多副本需要共享存储 + 数据库队列，见 `ingest_service.py`。
 
 ## 验收标准
 
@@ -445,7 +474,7 @@ Repository 而非在 service 里直接写 SQL：M4 的面板要复用同一套�
 | C6 | 限流计数存于 Redis，重启不归零 | `redis-cli GET rl:*` |
 | C7 | Redis 停掉后请求仍能成功（降级放行） | 停容器实测 |
 | C8 | 上传 5MB PDF 立即返回 task_id，不阻塞 | 计时实测 |
-| C9 | 文档变更后 `kb_version` 自增，旧检索缓存不再命中 | `redis-cli GET kb_version` |
+| C9 | 文档变更后 `kb_version` 自增（检索缓存部分随 T4b 移出 M2） | `redis-cli GET kb_version` |
 | C10 | 全部测试通过，前端 `vue-tsc` 通过 | 命令输出 |
 
 ## 明确不做

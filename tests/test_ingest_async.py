@@ -227,7 +227,6 @@ async def test_run_task_success(db):
         patch("backend.services.ingest_service.StreamingIngestionAdapter") as mock_adapter_cls,
         patch("backend.services.ingest_service.get_document_service") as mock_ds,
         patch("backend.services.ingest_service.redis_client.hset_mapping", new_callable=AsyncMock),
-        patch("backend.services.ingest_service.redis_client.bump_kb_version", new_callable=AsyncMock),
         patch("backend.services.ingest_service.remove_temp_file"),
     ):
         mock_adapter_cls.return_value.ingest_file_stream = _fake_stream
@@ -260,7 +259,6 @@ async def test_run_task_error(db):
         patch("backend.services.ingest_service.get_ingestion_async", new_callable=AsyncMock),
         patch("backend.services.ingest_service.StreamingIngestionAdapter") as mock_cls,
         patch("backend.services.ingest_service.redis_client.hset_mapping", new_callable=AsyncMock),
-        patch("backend.services.ingest_service.redis_client.bump_kb_version", new_callable=AsyncMock),
         patch("backend.services.ingest_service.remove_temp_file"),
     ):
         mock_cls.return_value.ingest_file_stream = _bad_stream

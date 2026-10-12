@@ -171,6 +171,26 @@ class TestDocumentService:
         assert collection.deleted_ids is None
 
     @pytest.mark.asyncio
+    async def test_invalidate_bumps_kb_version(self, monkeypatch):
+        """文档变更的唯一入口必须自增 kb_version。
+
+        四条变更路径（三种上传 + 删除）都经过这里；此前只有异步上传自增。
+        """
+        from unittest.mock import AsyncMock
+
+        from backend.cache import redis_client
+        import backend.services.chat_service as chat_service
+
+        bump = AsyncMock(return_value=1)
+        monkeypatch.setattr(redis_client, "bump_kb_version", bump)
+        # 不让测试去构造真实 ChatService（会加载 embedding 模型）
+        monkeypatch.setattr(chat_service, "get_chat_service", lambda: None)
+
+        service = DocumentService(FakeVectorDB(FakeCollection(_payload())))
+        await service.invalidate_retrieval_caches()
+        bump.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_stats(self):
         collection = FakeCollection(_payload())
         service = DocumentService(FakeVectorDB(collection))

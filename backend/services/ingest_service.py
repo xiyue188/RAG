@@ -117,10 +117,8 @@ async def _run_task(task_id: str, temp_path: str, filename: str, category: str) 
             task_id, stage="done", progress=100.0, message=f"完成，共 {chunk_count} 个切片"
         )
 
-        # 文档变了：BM25 索引按全库语料构建需要重建；kb_version 自增让
-        # 将来带版本号的检索缓存自然失效
+        # 文档变了：重建 BM25 索引并自增 kb_version（统一入口，见 DocumentService）
         await get_document_service().invalidate_retrieval_caches()
-        await redis_client.bump_kb_version()
         logger.info("ingest task %s 完成，%d 个切片", task_id, chunk_count)
     finally:
         await asyncio.to_thread(remove_temp_file, temp_path)

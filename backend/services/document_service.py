@@ -186,9 +186,18 @@ class DocumentService:
         这条链上任何一环改名都会断，而且 api 层本不该知道有 BM25 缓存。
         收敛到这里一处，调用方只需要知道"文档变了要通知一声"。
 
+        同时自增 Redis 的 `kb_version`。目前还没有检索缓存读它（缓存已移出
+        M2，见 STATUS），但"文档变了"的信号必须从唯一入口发出 ——
+        同步上传、流式上传、异步上传、删除四条路径都经过这里。此前只有
+        异步上传自增，将来接入缓存时另外三条路径会返回旧结果。
+
         失败不抛：缓存刷新失败的后果是检索结果略陈旧，
-        而让删除操作整体失败的后果严重得多。
+        而让删除操作整体失败的后果严重得多。`bump_kb_version` 本身在
+        Redis 不可用时返回 None 不抛异常。
         """
+        from backend.cache import redis_client
+
+        await redis_client.bump_kb_version()
         try:
             from backend.services.chat_service import get_chat_service
 
