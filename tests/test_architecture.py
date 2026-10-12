@@ -6,7 +6,7 @@
 
 ## 为什么用 AST 而不是 import-linter
 
-要守的五条里只有两条是纯 import 层次问题，`import-linter` 解决不了另外三条：
+要守的规则里只有一部分是纯 import 层次问题，`import-linter` 解决不了另外三条：
 
     "不得出现 .commit()"        —— 不是 import
     前端 .vue 里的阈值字面量     —— 不是 Python
@@ -374,3 +374,76 @@ class TestFrontendDoesNotHardcodeThresholds:
             "transition: all 0.35s ease;\n", "x.vue"
         )
         assert not find_frontend_threshold_literals("opacity: 0.755;\n", "x.vue")
+
+
+# ============================================================
+# 规则 6：backend 内部分层，下层不得 import 上层
+# ============================================================
+
+# 从上到下。列表里靠后的层不得 import 靠前的层。
+BACKEND_LAYERS = [
+    "backend.api",
+    "backend.services",
+    "backend.repositories",
+    "backend.db",
+]
+
+
+def find_upward_imports(source: str, filename: str, layer: str) -> List[Violation]:
+    """`layer` 层的源码是否 import 了比它更上层的模块。
+
+    按模块前缀判断而非顶层包：五层都在 `backend` 包下，
+    规则 1/2 用的顶层包比较在这里区分不出层次。
+    """
+    upper = BACKEND_LAYERS[: BACKEND_LAYERS.index(layer)]
+    violations = []
+    for module, lineno in _imported_modules(source):
+        for up in upper:
+            if module == up or module.startswith(up + "."):
+                violations.append(
+                    Violation(filename, lineno, f"{layer} → import {module}")
+                )
+    return violations
+
+
+class TestBackendLayering:
+    """依赖只能自上而下：api → services → repositories → db。
+
+    这条是 M2 收口时补的。`ingest_service` 为了清理临时文件
+    `from backend.api.upload import _remove_temp_file` —— service 反过来
+    依赖协议层。规则 2 只管"api 不得 import rag"，没覆盖层内方向，
+    于是漏了。修法是把临时文件工具移到 `services/temp_files.py`。
+
+    同层互相 import 不禁（如 `document_service` 调 `chat_service`），
+    那是同一层内的协作，不改变依赖方向。
+    """
+
+    @pytest.mark.parametrize("layer", BACKEND_LAYERS[1:])
+    def test_lower_layer_does_not_import_upper(self, layer):
+        directory = layer.replace(".", "/")
+        violations = _scan(
+            [directory],
+            lambda src, name: find_upward_imports(src, name, layer),
+        )
+        _fail(violations, f"{layer} 不得 import 上层（依赖必须自上而下）")
+
+    def test_detects_violation(self):
+        bad = "from backend.api.upload import _remove_temp_file\n"
+        assert find_upward_imports(bad, "ingest_service.py", "backend.services")
+
+    def test_detects_deep_violation(self):
+        bad = "from backend.services.chat_service import get_chat_service\n"
+        assert find_upward_imports(bad, "runs.py", "backend.repositories")
+
+    def test_allows_same_and_lower_layers(self):
+        ok = (
+            "from backend.services.chat_service import get_chat_service\n"
+            "from backend.repositories import RunRepository\n"
+            "from backend.db.session import session_scope\n"
+        )
+        assert not find_upward_imports(ok, "ingest_service.py", "backend.services")
+
+    def test_prefix_does_not_overmatch(self):
+        """`backend.apiary` 不是 `backend.api` —— 前缀比较要带点号。"""
+        ok = "import backend.apiary\n"
+        assert not find_upward_imports(ok, "x.py", "backend.services")

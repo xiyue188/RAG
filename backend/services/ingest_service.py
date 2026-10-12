@@ -30,7 +30,7 @@ from backend.db.session import session_scope
 from backend.repositories import IngestTaskRepository
 from backend.services.document_service import get_ingestion_async, get_document_service
 from backend.adapters import StreamingIngestionAdapter
-from backend.api.upload import _remove_temp_file
+from backend.services.temp_files import remove_temp_file
 
 logger = logging.getLogger(__name__)
 
@@ -126,9 +126,7 @@ async def _run_task(task_id: str, temp_path: str, filename: str, category: str) 
 
     finally:
         # 不论成败都清掉临时文件
-        import asyncio as _asyncio
-        from backend.api.upload import _remove_temp_file
-        await _asyncio.to_thread(_remove_temp_file, temp_path)
+        await asyncio.to_thread(remove_temp_file, temp_path)
 
 
 async def _worker_loop() -> None:

@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from typing import List
 import asyncio
 import logging
-import tempfile
+
 import uuid
 from pathlib import Path
 import json
@@ -27,22 +27,12 @@ from backend.services.document_service import (
     get_ingestion_async,
     get_document_service,
 )
+from backend.services.temp_files import remove_temp_file, write_temp_file
 
 # 用标准库 logging：协议层不 import rag（见 tests/test_architecture.py）
 logger = logging.getLogger(__name__)
 router = APIRouter()
 SUPPORTED_UPLOAD_TYPES = {ext.lower() for ext in SUPPORTED_FILE_TYPES}
-
-def _write_temp_file(content: bytes, suffix: str) -> str:
-    """把上传内容落到临时文件，返回路径。阻塞，需 to_thread 调用。"""
-    with tempfile.NamedTemporaryFile(mode="wb", suffix=suffix, delete=False) as fp:
-        fp.write(content)
-        return fp.name
-
-
-def _remove_temp_file(path: str) -> None:
-    """删除临时文件。阻塞，需 to_thread 调用。"""
-    Path(path).unlink(missing_ok=True)
 
 
 async def invalidate_retrieval_caches() -> None:
@@ -105,7 +95,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                 continue
 
             # 写临时文件是阻塞磁盘 I/O，扔进线程池
-            temp_path = await asyncio.to_thread(_write_temp_file, content, file_ext)
+            temp_path = await asyncio.to_thread(write_temp_file, content, file_ext)
 
             logger.info(f"开始摄入文件：{file.filename} ({len(content)} bytes)")
 
@@ -134,7 +124,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                 logger.info(f"✓ 文件摄入成功：{file.filename} ({chunk_count} chunks)")
 
             finally:
-                await asyncio.to_thread(_remove_temp_file, temp_path)
+                await asyncio.to_thread(remove_temp_file, temp_path)
 
         except Exception as e:
             file_result["error"] = str(e)
@@ -215,7 +205,7 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
             })
             continue
 
-        temp_path = await asyncio.to_thread(_write_temp_file, content, ext)
+        temp_path = await asyncio.to_thread(write_temp_file, content, ext)
         staged.append({
             "filename": file.filename, "ext": ext,
             "size": size, "temp_path": temp_path,
@@ -278,7 +268,7 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
                             failed_count += 1
 
                 finally:
-                    await asyncio.to_thread(_remove_temp_file, temp_path)
+                    await asyncio.to_thread(remove_temp_file, temp_path)
 
             except Exception as e:
                 logger.error(f"处理文件失败：{filename} - {e}", exc_info=True)
@@ -289,7 +279,7 @@ async def upload_documents_stream(files: List[UploadFile] = File(...)):
         # finally 未必执行得到，已落盘但没处理的临时文件会残留。
         for fd in staged:
             if fd["temp_path"]:
-                await asyncio.to_thread(_remove_temp_file, fd["temp_path"])
+                await asyncio.to_thread(remove_temp_file, fd["temp_path"])
 
         # 刷新检索侧缓存（BM25 索引按全库语料构建，新增文档后需重建）
         if processed_count > 0:
@@ -360,7 +350,7 @@ async def upload_documents_async(files: List[UploadFile] = File(...)):
 
         # 写临时文件（阻塞 I/O 放线程池）
         task_id = str(uuid.uuid4())
-        temp_path = await asyncio.to_thread(_write_temp_file, content, file_ext)
+        temp_path = await asyncio.to_thread(write_temp_file, content, file_ext)
         del content  # 尽早释放内存
 
         # 在 PG 建任务行
