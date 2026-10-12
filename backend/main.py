@@ -52,11 +52,9 @@ async def lifespan(app: FastAPI):
     db_ok = await db_session.healthcheck()
     redis_ok = await redis_client.ping()
 
-    # T6：启动后台摄入 worker，回收进程重启时遗留的孤儿任务
-    await ingest_service.start_worker()
-    orphans = await ingest_service.reclaim_pending()
-    if orphans:
-        print(f"  ⚠ reclaimed {orphans} orphaned ingest task(s) as error")
+    # 后台摄入：worker 消费上传队列；清扫器启动即扫一次，把上次进程
+    # 遗留的超时任务标 error，之后定期扫
+    await ingest_service.start()
 
     print("=" * 60)
     print("DeepBlue Intelligence API starting...")
@@ -74,7 +72,7 @@ async def lifespan(app: FastAPI):
 
     # 反序关闭。不关连接池会在进程退出时报 "Event loop is closed" ——
     # 连接的析构逻辑跑在已关闭的事件循环上。
-    await ingest_service.stop_worker()
+    await ingest_service.stop()
     await redis_client.close()
     await db_session.dispose_engine()
     print("DeepBlue Intelligence API stopped.")

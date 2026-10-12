@@ -703,26 +703,36 @@ class TestIngestTask:
             assert [t.id for t in pending] == ["t0", "t2"]
 
     @pytest.mark.asyncio
-    async def test_reclaim_stale_running_returns_to_pending(self, db):
-        """进程被杀留下的 running 任务打回 pending 而非标 error ——
-        摄入本身幂等（先 delete_by_file 再插入），重跑安全。
+    async def test_fail_stale_marks_old_unfinished_as_error(self, db):
+        """超时的 pending / running 标 error；新任务与已结束任务不动。
+
+        不打回 pending：临时文件路径只在内存队列里，进程死后无法重跑。
         """
         async with db.session_scope() as s:
             repo = IngestTaskRepository(s)
-            stale = await repo.create(filename="a.md", size_bytes=1, task_id="stale")
-            fresh = await repo.create(filename="b.md", size_bytes=1, task_id="fresh")
-            stale.created_at = utcnow() - timedelta(hours=2)
+            old_pending = await repo.create(filename="a.md", size_bytes=1, task_id="old-p")
+            old_running = await repo.create(filename="b.md", size_bytes=1, task_id="old-r")
+            old_done = await repo.create(filename="c.md", size_bytes=1, task_id="old-d")
+            await repo.create(filename="d.md", size_bytes=1, task_id="fresh")
+            for t in (old_pending, old_running, old_done):
+                t.created_at = utcnow() - timedelta(hours=2)
             await s.flush()
-            await repo.mark_running("stale")
-            await repo.mark_running("fresh")
+            await repo.mark_running("old-r")
+            await repo.mark_running("old-d")
+            await repo.mark_done("old-d", chunk_count=3)
 
         async with db.session_scope() as s:
-            assert await IngestTaskRepository(s).reclaim_stale_running(1800) == 1
+            assert await IngestTaskRepository(s).fail_stale(1800, error="超时") == 2
 
         async with db.session_scope() as s:
             repo = IngestTaskRepository(s)
-            assert (await repo.get("stale")).status == "pending"
-            assert (await repo.get("fresh")).status == "running"
+            for tid in ("old-p", "old-r"):
+                task = await repo.get(tid)
+                assert task.status == "error"
+                assert task.error == "超时"
+                assert task.finished_at is not None
+            assert (await repo.get("old-d")).status == "done"
+            assert (await repo.get("fresh")).status == "pending"
 
 
 # ============================================================

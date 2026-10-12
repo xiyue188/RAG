@@ -16,11 +16,13 @@ import pytest
 
 from backend.db.session import session_scope
 from backend.repositories import IngestTaskRepository
+from backend.services import ingest_service
 from backend.services.ingest_service import (
+    STALE_ERROR,
     _run_task,
     _update_progress,
     enqueue,
-    reclaim_pending,
+    sweep_stale,
 )
 
 
@@ -98,54 +100,70 @@ async def test_task_lifecycle_error(db):
 
 
 # ---------------------------------------------------------------------------
-# reclaim_pending：进程重启后孤儿 pending 任务标为 error
+# sweep_stale：超时未结束的任务标 error，新任务不动
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_reclaim_pending_marks_as_error(db):
-    """reclaim_pending 把所有 pending 任务标为 error（临时文件已丢失）。"""
-    for i in range(3):
-        async with session_scope() as s:
-            await IngestTaskRepository(s).create(
-                filename=f"orphan_{i}.md",
-                size_bytes=100,
-                task_id=f"orphan-{i}",
-            )
+async def _age(task_id: str, hours: float) -> None:
+    from datetime import timedelta
+    from backend.db.models import utcnow
 
-    count = await reclaim_pending()
-    assert count == 3
-
-    for i in range(3):
-        async with session_scope() as s:
-            t = await IngestTaskRepository(s).get(f"orphan-{i}")
-        assert t.status == "error"
-        assert "重启" in t.error
+    async with session_scope() as s:
+        task = await IngestTaskRepository(s).get(task_id)
+        task.created_at = utcnow() - timedelta(hours=hours)
 
 
 @pytest.mark.asyncio
-async def test_reclaim_pending_ignores_running_and_done(db):
-    """reclaim_pending 只处理 pending，不动 running 和 done。"""
+async def test_sweep_stale_fails_old_pending_and_running(db):
+    """进程重启后遗留的 pending / running 超过阈值即标 error。"""
     async with session_scope() as s:
-        await IngestTaskRepository(s).create(
-            filename="running.md", size_bytes=100, task_id="t-running"
-        )
-        await IngestTaskRepository(s).mark_running("t-running")
+        repo = IngestTaskRepository(s)
+        await repo.create(filename="p.md", size_bytes=1, task_id="old-pending")
+        await repo.create(filename="r.md", size_bytes=1, task_id="old-running")
+        await repo.mark_running("old-running")
+    await _age("old-pending", 2)
+    await _age("old-running", 2)
+
+    assert await sweep_stale() == 2
 
     async with session_scope() as s:
-        await IngestTaskRepository(s).create(
-            filename="done.md", size_bytes=100, task_id="t-done"
-        )
-        await IngestTaskRepository(s).mark_running("t-done")
-        await IngestTaskRepository(s).mark_done("t-done", chunk_count=1)
+        for tid in ("old-pending", "old-running"):
+            task = await IngestTaskRepository(s).get(tid)
+            assert task.status == "error"
+            assert task.error == STALE_ERROR
 
-    count = await reclaim_pending()
-    assert count == 0  # 没有 pending 任务
+
+@pytest.mark.asyncio
+async def test_sweep_stale_spares_fresh_tasks(db):
+    """多副本安全的关键：未超时的任务（可能在别的副本队列里）不能被清。"""
+    async with session_scope() as s:
+        await IngestTaskRepository(s).create(filename="f.md", size_bytes=1, task_id="fresh")
+
+    assert await sweep_stale() == 0
 
     async with session_scope() as s:
-        r = await IngestTaskRepository(s).get("t-running")
-        d = await IngestTaskRepository(s).get("t-done")
-    assert r.status == "running"
-    assert d.status == "done"
+        assert (await IngestTaskRepository(s).get("fresh")).status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_swept_task_is_skipped_and_temp_file_removed(db, tmp_path):
+    """被清扫的任务轮到 worker 时 CAS 失败：不执行、不改状态、但要清临时文件。
+
+    此前抢占失败直接 return，临时文件留在磁盘上。
+    """
+    temp = tmp_path / "upload.md"
+    temp.write_text("x", encoding="utf-8")
+    async with session_scope() as s:
+        await IngestTaskRepository(s).create(filename="s.md", size_bytes=1, task_id="swept")
+    await _age("swept", 2)
+    await sweep_stale()
+
+    with patch("backend.services.ingest_service._ingest", new_callable=AsyncMock) as ingest:
+        await _run_task("swept", str(temp), "s.md", "uploaded")
+
+    ingest.assert_not_called()
+    assert not temp.exists()
+    async with session_scope() as s:
+        assert (await IngestTaskRepository(s).get("swept")).status == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -261,16 +279,30 @@ async def test_run_task_error(db):
 
 @pytest.mark.asyncio
 async def test_enqueue_nonblocking():
-    """enqueue 是非阻塞的，即使队列里已有任务也能立即返回。"""
-    import backend.services.ingest_service as svc
-    # 清空队列
-    while not svc._queue.empty():
-        svc._queue.get_nowait()
-
+    """队列无上限，enqueue 立即返回。"""
+    await ingest_service.stop()  # 重置为新队列
     await enqueue("t1", "/tmp/a", "a.md")
     await enqueue("t2", "/tmp/b", "b.md")
+    assert ingest_service._get_queue().qsize() == 2
+    await ingest_service.stop()
 
-    assert svc._queue.qsize() == 2
-    # 清理
-    while not svc._queue.empty():
-        svc._queue.get_nowait()
+
+@pytest.mark.asyncio
+async def test_worker_survives_task_exception():
+    """单个任务抛出意外异常，worker 不能退出，要继续处理下一个。"""
+    await ingest_service.stop()
+    seen = []
+
+    async def fake_run(task_id, *args):
+        seen.append(task_id)
+        if task_id == "boom":
+            raise RuntimeError("意外错误")
+
+    with patch("backend.services.ingest_service._run_task", side_effect=fake_run),          patch("backend.services.ingest_service.sweep_stale", new_callable=AsyncMock):
+        await ingest_service.start()
+        await enqueue("boom", "/tmp/a", "a.md")
+        await enqueue("ok", "/tmp/b", "b.md")
+        await asyncio.wait_for(ingest_service._get_queue().join(), timeout=2)
+        await ingest_service.stop()
+
+    assert seen == ["boom", "ok"]

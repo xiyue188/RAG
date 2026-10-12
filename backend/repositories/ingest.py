@@ -109,22 +109,31 @@ class IngestTaskRepository(BaseRepository):
         )
         return result.scalars().all()
 
-    async def reclaim_stale_running(self, older_than_seconds: int = 1800) -> int:
-        """把卡在 running 的任务打回 pending，返回处理数量。
+    async def fail_stale(self, older_than_seconds: int, *, error: str) -> int:
+        """把超时仍未结束（pending / running）的任务标为 error，返回处理数量。
 
-        进程在摄入途中被杀时，任务会永远停在 running —— 没有人再去
-        调 mark_done。重启后需要有人把它们捞回来。
+        **为什么是标 error 而不是打回 pending 重跑**：此前这里是
+        `reclaim_stale_running`（running → pending），理由是"摄入幂等，重跑
+        安全"。幂等本身成立，但重跑需要原始文件，而临时文件路径只存在于
+        进程内的队列里、没有落库 —— 进程一死路径就丢了，打回 pending 的
+        任务永远不会有人处理。唯一诚实的终态是 error，让用户重新上传。
 
-        打回 pending 而不是直接标 error：摄入本身幂等
-        （先 delete_by_file 再插入），重跑是安全的，最坏白算一次 embedding。
-        这正是当初移除分布式锁的依据。
+        **为什么按年龄而不是"本进程启动前创建的"**：多副本时，副本 B 启动
+        若清掉所有早于自己启动的任务，会误杀副本 A 队列里正常排队的任务。
+        按年龄判断，只要阈值大于"排队 + 摄入"的最长耗时，就不会误伤活任务。
+
+        一条 UPDATE 完成，不先查再逐行改：避免 N+1，也避免查询与更新之间
+        任务状态已变的窗口。
         """
         from datetime import timedelta
 
         cutoff = utcnow() - timedelta(seconds=older_than_seconds)
         result = await self.session.execute(
             update(IngestTask)
-            .where(IngestTask.status == "running", IngestTask.created_at < cutoff)
-            .values(status="pending")
+            .where(
+                IngestTask.status.in_(("pending", "running")),
+                IngestTask.created_at < cutoff,
+            )
+            .values(status="error", error=error, finished_at=utcnow())
         )
         return result.rowcount

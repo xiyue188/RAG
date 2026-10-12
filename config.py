@@ -106,6 +106,13 @@ TRUSTED_PROXY_IPS: list[str] = [
     if ip.strip()
 ]
 
+# 异步摄入：pending / running 超过该时长即视为失效并标 error。
+# 必须大于"排队 + 单个文件摄入"的最长耗时，否则会清掉还在排队的活任务。
+# 10MB 上限的文件在 CPU 上摄入约数分钟，默认 30 分钟留足余量。
+INGEST_STALE_SECONDS = get_int("INGEST_STALE_SECONDS", 1800)
+# 清扫间隔
+INGEST_SWEEP_INTERVAL_SECONDS = get_int("INGEST_SWEEP_INTERVAL_SECONDS", 300)
+
 # ============================================================
 # Embedding 模型配置
 # ============================================================
