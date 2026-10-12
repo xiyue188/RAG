@@ -20,13 +20,13 @@
 | 4 | **T0d** 架构约束测试 | 注入违规必失败并指出行号（已实测） | **完成** |
 | 5 | **T0e** 文档更正 | ADR-004 阶段 1、本清单 | **完成** |
 | 6 | **T5** 会话落库 + run 轨迹落库 | C3/C4/C5：一次问答在 `runs` 留一行，重启后数据仍在 | **完成** |
-| 7 | **T4** 限流迁移 + 缓存防御 | C6/C7/C9 | **完成** |
-| — | **← 停下来 review（当前位置）** | 301 passed；`vue-tsc` exit 0 | |
-| 8 | **T6** 异步摄入 | C8：上传 5MB PDF 立即返回 task_id | **完成** |
-| — | **← M2 完成** ✓ | 311 passed；`vue-tsc` exit 0 | |
-| 9 | M3 工具 `Protocol` + dispatcher | 加新工具不需改 dispatcher | M3 |
-| 10 | M3 answerability 重做 | `rag/eval/` 能直接跑可答性评测 | M3 |
-| 11 | M5 `LLMProvider` Port + fake | CI 跑通端到端测试且无真实 API 调用 | M5 |
+| 7 | **T4** 限流迁移（缓存部分已移出 M2） | C6/C7 | **完成** |
+| 8 | **T6** 异步摄入 | C8：上传立即返回 task_id | **完成** |
+| 9 | **M2 收口** | 逐项审查后补齐的 7 处问题，见下方「M2 收口」 | **完成** |
+| — | **← M2 完成（当前位置）** | 331 passed；`vue-tsc` exit 0 | |
+| 10 | M3 工具 `Protocol` + dispatcher | 加新工具不需改 dispatcher | M3 |
+| 11 | M3 answerability 重做 | `rag/eval/` 能直接跑可答性评测 | M3 |
+| 12 | M5 `LLMProvider` Port + fake | CI 跑通端到端测试且无真实 API 调用 | M5 |
 
 T0 是 T3 完成后审计出五处规则漂移而插入的，详见计划书 T0 节
 与 [ADR-004](docs/decisions/ADR-004-layering-and-rule-placement.md)。
@@ -47,9 +47,23 @@ T0 是 T3 完成后审计出五处规则漂移而插入的，详见计划书 T0 
 | T1 依赖与容器 | **完成** | compose 加 PG16 + Redis7 含健康检查；requirements 补 6 个依赖；`.env.example` 同步 |
 | T2 ORM 与迁移 | **完成** | 11 张表 + Alembic 初始化 + 首个迁移；修掉 SQLite 主键与时区两处缺陷 |
 | T3 Repository 层 | **完成** | 4 个 Repository + 54 条测试；修掉 SQLite 外键不强制、SAVEPOINT 失效、并发写死锁三处 |
-| T4 Redis + 限流迁移 | 一半 | `redis_client.py` 已有并有测试；`rate_limit.py` 仍是内存态。**范围已扩写**（XFF 信任、无界增长、缓存三大问题防御） |
-| T5 会话落库 | 未开始 | Repository 已就绪，剩下改 `chat_service.py` |
-| T6 异步摄入 | 未开始 | `IngestTaskRepository` 已就绪；摄入路径的阻塞调用已修 |
+| T4 限流迁移 | **完成** | Redis 固定窗口 + 有界 LRU 内存降级 + XFF 可信代理校验。检索缓存与三大问题防御**移出 M2**（理由见计划书 T4b） |
+| T5 会话落库 | **完成** | 一次问答一个事务写 sessions/runs/evidence/messages；重启后从 messages 表回填上下文，内存会话 LRU 有界 |
+| T6 异步摄入 | **完成** | `asyncio.Queue` + 单 worker + 超时清扫器；PG 存状态、Redis 存进度。**单副本设计**，见 ADR-005 |
+
+## M2 收口（2026-10-12）
+
+T6 之后逐项审查，发现以下问题并已修复。前 4 条是"标了完成但其实没做到"：
+
+| # | 问题 | 修法 | 提交 |
+|---|---|---|---|
+| 1 | service 反向 import api（`ingest_service` → `api.upload`） | 临时文件工具移到 `services/temp_files.py`；**架构规则 6**：api > services > repositories > db 下层不得 import 上层 | `220fadf` |
+| 2 | 卡在 running 的任务永不回收；启动时清掉全部 pending 会在多副本下误杀；抢占失败分支泄漏临时文件 | `fail_stale` 按年龄把超时 pending/running 标 error；清扫器启动即扫并定期扫 | `8ebbfc6` |
+| 3 | T4 被标完成，但"缓存防御"一行代码没有；`kb_version` 只有异步上传会自增 | 缓存正式移出 M2；`kb_version` 自增收拢到 `invalidate_retrieval_caches`，四条变更路径一致 | `af1c29d` |
+| 4 | T5 只写库不读库：重启后上下文为空、历史接口读内存，C5 后半句不满足；内存会话字典无上限 | 数据库为真相源、内存为 LRU 热缓存，首次访问回填 | `5c23ab4` |
+| 5 | 限流测试 `test_memory_table_bounded` 什么都没测；`_make_app` 传的参数从未生效 | 重写并做反向验证；中间件参数改构造注入 | `fa3e794` |
+| 6 | 计划书、docstring 与实现不符（降级策略、FIFO/LRU、滑动/固定窗口、T6 端点） | 文档改为与代码一致并写明理由 | 各提交 |
+| 7 | `.env.example` 缺 T4/T6 新增配置；本文件多处过期 | 同步 | 本提交 |
 
 ## Repository 层的三条硬约束
 
@@ -73,28 +87,40 @@ tool_calls，因为后两者不能脱离 run 存在。
 |---|---|---|
 | C1 | `docker compose up` 起 4 服务且健康检查通过 | **部分** —— `postgres` 与 `redis` 已实测起来且 healthy；backend/frontend 镜像未构建（要装 torch，约 10-20 分钟，放 M5） |
 | C2 | `alembic upgrade head` 建出全部表 | **通过** —— SQLite 与 **PostgreSQL 上都实测过**，`alembic check` 均无漂移，downgrade 也验过 |
-| C3-C5 | runs/evidence 落库、重启后数据仍在 | 未开始（依赖 T3） |
-| C6-C7 | 限流存 Redis、Redis 停掉仍放行 | 未开始（T4 后半） |
-| C8-C9 | 异步上传、`kb_version` 自增 | 未开始（T6） |
-| C10 | 测试通过 + 前端 `vue-tsc` 通过 | **通过** —— 228 passed；`vue-tsc --noEmit` exit 0 |
+| C3-C4 | 一次问答在 runs 留一行、evidence 记录证据 | **通过（单测）** —— `test_chat_persistence.py`；真实问答链路未实测 |
+| C5 | 重启后 runs 仍在、会话历史可读 | **通过（单测）** —— 用新实例模拟重启验证回填；未真实重启进程实测 |
+| C6 | 限流计数存 Redis | **通过（单测，mock Redis）** —— 真实 Redis 上未实测 |
+| C7 | Redis 停掉后请求仍成功 | **通过（单测）** —— 降级为有界内存计数，仍按单机配额限流，不拒绝全部流量 |
+| C8 | 上传立即返回 task_id | **通过（单测）** —— 上传 5MB 文件期间 `/health` 不阻塞**未实测** |
+| C9 | 文档变更后 `kb_version` 自增 | **通过** —— 检索缓存部分随 T4b 移出 M2 |
+| C10 | 测试通过 + 前端 `vue-tsc` 通过 | **通过** —— 331 passed；`vue-tsc --noEmit` exit 0 |
+
+**未实测项集中在一处**：C3–C8 都只有单元测试，没有在起好的服务上走过一遍。
+那需要服务 + ChromaDB + embedding 模型 + 真实 LLM，属于 M5 的集成测试
+（需要 fake LLM provider 才不烧 token）。
 
 ## 测试覆盖
 
 ```
-tests/test_scoring.py      37 条  分数口径
-tests/test_metrics.py      35 条  检索指标
-tests/test_threshold.py    17 条  阈值校准
-tests/test_db.py           36 条  ORM/约束/级联/事务边界/并发/SQLite PRAGMA
-tests/test_redis_client.py 41 条  降级路径（三种不可用形态）
-tests/test_migrations.py    8 条  迁移与模型不漂移、升降级往返
-tests/test_repositories.py 54 条  四个 Repository + 三条硬约束
-                          ----
-                          228 passed（约 17s）
+tests/test_scoring.py          37 条  分数口径
+tests/test_metrics.py          35 条  检索指标
+tests/test_threshold.py        17 条  阈值校准
+tests/test_answerability.py    25 条  可答性判断 assess_context
+tests/test_db.py               36 条  ORM/约束/级联/事务边界/并发/SQLite PRAGMA
+tests/test_migrations.py        8 条  迁移与模型不漂移、升降级往返
+tests/test_repositories.py     53 条  四个 Repository + 三条硬约束
+tests/test_redis_client.py     41 条  降级路径（三种不可用形态）
+tests/test_rate_limit.py       16 条  限流：有界 LRU、XFF、Redis/降级
+tests/test_document_service.py 15 条  文档服务、事件循环不阻塞
+tests/test_chat_persistence.py 11 条  问答落库与重启回填
+tests/test_ingest_async.py     12 条  异步摄入状态机、清扫器、worker
+tests/test_architecture.py     25 条  6 条分层规则 + 反向测试
+                              ----
+                              331 passed（约 70s）
 ```
 
-仍然零覆盖：`api/`、`services/chat_service.py`、`adapters/`、
-`rate_limit.py`、`rag/retriever.py`、`rag/llm.py`。集成测试属 M5，
-需要 fake LLM provider 才能不烧 token。
+仍然零覆盖：`api/` 端点本身、`chat_service.answer_stream` 主流程、
+`adapters/`、`rag/retriever.py`。集成测试属 M5，需要 fake LLM provider。
 
 ## M2 已修掉的缺陷
 
@@ -240,7 +266,8 @@ techcorp_docs                               21   换指纹前旧库，可删
 - `create_all` 与 Alembic 并存的漂移风险。已在 `alembic/README.md` 写明：
   `init_models()` 只用于测试，生产路径只有 `alembic upgrade head`。
   lifespan 里**没有**调 `create_all`。
-- `rate_limit.py` 三个缺陷，**其中两个单机就存在**，T4 的范围应当覆盖：
+- ~~`rate_limit.py` 三个缺陷~~ **T4 已修**。原记录保留：
+  **其中两个单机就存在**：
   1. 内存态 → 重启归零、多副本配额翻 N 倍（原计划已知）
   2. **`request_history` 无界增长**。`defaultdict(deque)` 为每个见过的 IP
      建一个 deque 且**永不清理** —— 只有该 IP 再次访问才会清掉它自己的
@@ -252,17 +279,30 @@ techcorp_docs                               21   换指纹前旧库，可删
   记住这条结论：**`sleep(0)` 不能让阻塞调用变成非阻塞** —— 它只在调用
   之前让出一次控制权，紧随其后的同步计算照样霸占事件循环。
   六处改成了 `asyncio.to_thread`。
-- **`upload.py:105` 的同步端点完全没有 offload**。`ingestion.ingest_file()`
-  直接在 `async def` 里跑，10MB 文件的 embedding 期间整个进程停摆。
-  T6 改异步摄入时这个端点会被替换，但在那之前它是最大的单点阻塞。
-- **`routes.py` 的 ChromaDB 调用直接在 `async def` 里**（`VectorDB()`、
-  `collection.get/delete/count`）。其中 `list_documents(include_chunks=True)`
-  会拉全库文档内容，是同步阻塞调用。数据量小时无感，语料涨上去会明显。
+- ~~`upload.py` 同步端点没有 offload、`routes.py` 的 ChromaDB 调用在
+  `async def` 里~~ **T0c 已修**（`DocumentService` + 全部 `to_thread`）。
 - **`_sync_generator_to_async` 每个流式请求占用两份线程资源**
   （`chat_service.py:22-51`）：一个专属 `threading.Thread` 跑生产者，
   外加 `asyncio.to_thread(queue.get)` **阻塞占用默认线程池的一个 worker**
   等待数据。默认池只有 `min(32, cpu+4)` 个 worker，并发流式请求多了会
   把池占满，而 `to_thread` 的其它用途（检索、指代消解）也共用这个池。
+- **Redis 黑洞时每个请求多等 2 秒**。`redis_client` 的
+  `socket_connect_timeout=2` 且没有熔断：Redis 宕机且端口直接拒绝时立刻
+  失败，无影响；但网络黑洞（包被丢、不回 RST）时，限流中间件每个请求都会
+  先等满 2 秒超时再降级。修法是熔断：失败后 N 秒内直接跳过 Redis。
+  M5 做故障注入测试时一起处理。
+- **`mark_done` / `mark_error` 不校验当前状态**。清扫器把一个超时但其实
+  还在跑的任务标 error 后，它跑完时 `mark_done` 会改回 done。结果是对的
+  （切片确实写进去了），但状态机"只能单向前进"的约定被打破。阈值 30 分钟
+  远大于 10MB 上限文件的摄入时长，实际很难触发。
+- **数据库里的会话从不过期**。`SessionRepository.cleanup_expired` 已实现但
+  无人调用，这是有意的：保留策略（留多久、是否脱敏、runs 是否随之删）是
+  产品决策，不该由清理代码隐式决定。M5 定。
+- **T6 是单副本设计**。临时文件路径只在内存队列里，多副本需要共享存储 +
+  数据库队列（`SELECT ... FOR UPDATE SKIP LOCKED`）。见 ADR-005。
+- `test_document_service.py::test_delete_returns_count_and_removes_ids`
+  会构造真实 `ChatService`（删除后刷新 BM25 缓存经由它），加载 embedding
+  模型，是整套测试里唯一的慢用例与那条 FutureWarning 的来源。应注入替身。
 - `Index("ix_runs_created_desc", "created_at")` 实际是升序索引，名字里的
   desc 名不副实。单列索引可反向扫描，功能上没问题，仅命名误导。
 - `scripts/` 下 4 个历史调试脚本仍引用已删配置

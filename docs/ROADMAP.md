@@ -24,7 +24,7 @@
 |---|---|---|---|---|
 | M0 | 地基修正：分数口径、中文模型、RRF、chunk 定位 | 6-8h | **完成** | [M0](plans/M0-foundation.md) |
 | M1 | 评测集与检索实验 | 14-18h | **完成** | [M1](plans/M1-evaluation.md) |
-| M2 | 基础设施：PG + Redis + 异步摄入 | 8-10h | **进行中** | [M2](plans/M2-infrastructure.md) |
+| M2 | 基础设施：PG + Redis + 异步摄入 | 8-10h | **完成** | [M2](plans/M2-infrastructure.md) |
 | M3 | Agentic 编排：路由、工具、引用校验 | 18-22h | 未开始 | 待写 |
 | M4 | 大脑面板改造：轨迹、证据、校验视图 | 8-10h | 未开始 | 待写 |
 | M5 | 测试、Docker、README、安全 | 8-10h | 未开始 | 待写 |
@@ -86,7 +86,8 @@ feedback / eval_runs / eval_results / ingest_tasks
 ```
 
 Redis 的 key 设计要点：检索缓存带 `kb_version`，文档变更时 `INCR` 一次，
-旧 key 自然失效，不必遍历删除。
+旧 key 自然失效，不必遍历删除。（检索缓存本身已移出 M2，`kb_version`
+自增已就位；接入时机待 M3 定下 rerank 策略后再定。）
 
 文档解析异步化：`upload → 建 task → 立即返回 task_id → 后台 worker →
 进度写 Redis → GET /tasks/{id}/events`。用 `asyncio.Queue` + 常驻 worker，
@@ -221,6 +222,7 @@ SSE 断线恢复：客户端带 `Last-Event-ID`，服务端从 Redis Stream 补�
 | 检索融合 | RRF，无权重参数 | 两路分数量纲不同，加权相加无物理意义。见 [ADR-001](decisions/ADR-001-rrf-over-weighted-fusion.md) |
 | 工具幂等 | 拆成 run 内步骤键 + 跨 run 缓存键 | 一个字段塞两种语义会让全局键把合法的重复请求判成重复。唯一性交给数据库约束而非应用层"先查再写"。见 [ADR-003](decisions/ADR-003-tool-call-idempotency-key.md) |
 | 分层与端口 | 混合：只在 LLM、工具、可答性三处引入端口，其余保持直接依赖 | 多数外部依赖只有一个实现且已决定不换，为它们写 Protocol 得到的是"一个接口一个实现"的空抽象。但规则漂移已真实发生（可答性判断漂进了编排层），关键边界需要接口挡住。见 [ADR-004](decisions/ADR-004-layering-and-rule-placement.md) |
+| 异步摄入 | 进程内 `asyncio.Queue` + 单 worker，不用 Celery；接受单副本限制 | 多副本的前提是共享存储，只换队列跑不通；本项目单副本部署。重启丢失的任务由清扫器按年龄标 error。见 [ADR-005](decisions/ADR-005-async-ingestion-in-process-queue.md) |
 | 评测数据 | T2Ranking + CRUD-RAG，不自己标注 | 规模、避免循环论证、可比性。见 [ADR-002](decisions/ADR-002-eval-dataset-choice.md) |
 | 指标实现 | 检索层自研，生成层用 Ragas | 确定性运算应可单测；语义判断才交给 LLM，且必须人工抽检报一致率 |
 

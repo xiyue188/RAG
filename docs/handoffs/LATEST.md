@@ -1,48 +1,40 @@
-# 交接文档 — 2026-09-27
+# 交接文档 — 2026-10-12
 
 > 覆写此文件时用 `docs/handoffs/LATEST.md`，旧内容不保留。
 > 事实来源：代码与 `git log`；本文件仅导航。
 
-## M2 完成 ✓
+## 当前位置
 
-**311 passed，`vue-tsc` exit 0。** 全部 8 个任务完成，M2 收尾。
+**M2 完成。** 331 passed，`vue-tsc` exit 0。下一阶段 M3。
 
-| 任务 | 提交 | 产出 |
-|---|---|---|
-| T0a–T0e | 9bf186f | 阈值单一真相源、删可答性副本、I/O 边缘化、AST 架构测试、文档更正 |
-| T5 | 786dec3 | 会话落库 + run 轨迹落库，6 条测试 |
-| T4 | 374bb75 | 限流→Redis、无界内存修复、XFF 校验，11 条测试 |
-| T6 | 156d87f, 9dd84b2 | 后台摄入服务 + 异步上传端点，10 条测试 |
+## 本次会话做了什么
 
-## T6 架构说明
+T6 交付后做了一轮逐项审查，发现 7 处问题。其中 4 处属于"标了完成但没做到"，
+已全部修复。明细见 [STATUS.md](../../STATUS.md)「M2 收口」节，这里只列提交：
 
-**两个新端点：**
-- `POST /api/v1/documents/upload/async` — 校验文件、写临时盘、建 `ingest_tasks` 行，立即返回 `{tasks: [{task_id, status: "pending"}]}`（202）
-- `GET /api/v1/documents/tasks/{task_id}` — 从 PG 读权威终态，从 Redis 读实时进度（Redis 不可用时 `progress: {}`）
+| 提交 | 内容 |
+|---|---|
+| `220fadf` | service 反向 import api → 临时文件工具移到 service 层；架构规则 6（backend 内部分层） |
+| `8ebbfc6` | 摄入任务回收改为按年龄清扫：修卡死、多副本误杀、临时文件泄漏 |
+| `af1c29d` | 检索缓存移出 M2；`kb_version` 自增收拢到唯一入口 |
+| `5c23ab4` | T5 补读路径：重启后会话上下文与历史从数据库回填，内存会话 LRU 有界 |
+| `fa3e794` | 重写两条空测试；限流中间件参数改构造注入 |
+| 本提交 | 文档同步、ADR-005、`.env.example` |
 
-**[backend/services/ingest_service.py](../../backend/services/ingest_service.py) — 后台 worker：**
-- 进程级 `asyncio.Queue`，lifespan 启动时 `start_worker()`
-- worker 取 `(task_id, temp_path, filename, category)` 元组，调 `StreamingIngestionAdapter` 跑摄入
-- 进度写 `ingest:{task_id}` Redis hash（TTL 1h），不可用时静默
-- 成功：`mark_done`；失败：`mark_error`；完成后 `invalidate_retrieval_caches + bump_kb_version`
-- `reclaim_pending`：进程重启时把孤儿 pending 任务标为 error（临时文件已丢，需重新上传）
+另外：改写了 git 历史，去掉一条提交信息里的工具署名（已 force push）。
 
-**设计决策：**
-- 不引入 Celery/RQ — 摄入在同进程内，无分布式需求，asyncio.Queue 够用
-- 并发上限 1 个 worker — embedding 是 torch forward pass，多 worker 争线程池槽位无法提速
-- 孤儿任务标 error 而非入队 — 临时文件随重启消失，重跑必然失败，告知用户重新上传更诚实
+## 下一次会话从哪开始
 
-## 未验证
+1. 写 M3 计划书 `docs/plans/M3-agent.md`（ROADMAP 里 M3 计划书一栏还是"待写"）
+2. M3 第一格建议：新建 `rag/answerability.py`，实现可答性三步演进的第一步
+   ——top1 绝对分 + top1−top2 分差的规则版本，无需训练数据，
+   在 `rag/eval/` 用 M1 的无答案集评测，对比 19.1% 的基线
+3. 之后才是状态机、路由、四个工具、dispatcher、citation_verify
 
-C8 的端到端（上传真实 5MB 文件、/health 不中断）未实测，只有单元测试。
-端对端验证需要起服务 + ChromaDB + 嵌入模型，属于 M5 集成测试范围。
+## 注意
 
-## 下一格：M3
-
-**下一阶段**：M3 Agentic 编排（状态机、路由、四个工具、dispatcher、citation_verify）
-
-M3 开始前建议先做：
-1. `answerability.py` — 第一步（top1-top2 分差规则，无需训练数据）
-2. M3 计划书（`docs/plans/M3-agent.md`）
-
-详见 [ROADMAP.md](../../docs/ROADMAP.md) M3 节与 [STATUS.md](../../STATUS.md)。
+- C3–C8 只有单元测试，没有在起好的服务上实测过（要服务 + ChromaDB +
+  模型 + 真实 LLM）。不要把它们讲成"端到端验证过"。M5 用 fake LLM 补。
+- T6 是单副本设计，见 ADR-005。
+- 「待办观察」新增 5 条边界外问题（Redis 黑洞 2 秒、状态机未校验、
+  会话不过期、单副本、一条慢测试），都不阻塞 M3。

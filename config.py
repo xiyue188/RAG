@@ -81,7 +81,7 @@ DATABASE_URL = os.getenv(
 # ============================================================
 # Redis 不作为事实来源：其中全部内容可丢弃后重建。
 # 因此所有依赖 Redis 的功能都必须有降级路径 ——
-# 限流降级为放行，缓存降级为穿透，锁降级为无锁。
+# 限流降级为进程内计数，缓存降级为穿透，锁降级为无锁。
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_ENABLED = get_bool("REDIS_ENABLED", True)
 
