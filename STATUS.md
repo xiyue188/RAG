@@ -57,13 +57,13 @@ T6 之后逐项审查，发现以下问题并已修复。前 4 条是"标了完�
 
 | # | 问题 | 修法 | 提交 |
 |---|---|---|---|
-| 1 | service 反向 import api（`ingest_service` → `api.upload`） | 临时文件工具移到 `services/temp_files.py`；**架构规则 6**：api > services > repositories > db 下层不得 import 上层 | `220fadf` |
-| 2 | 卡在 running 的任务永不回收；启动时清掉全部 pending 会在多副本下误杀；抢占失败分支泄漏临时文件 | `fail_stale` 按年龄把超时 pending/running 标 error；清扫器启动即扫并定期扫 | `8ebbfc6` |
-| 3 | T4 被标完成，但"缓存防御"一行代码没有；`kb_version` 只有异步上传会自增 | 缓存正式移出 M2；`kb_version` 自增收拢到 `invalidate_retrieval_caches`，四条变更路径一致 | `af1c29d` |
-| 4 | T5 只写库不读库：重启后上下文为空、历史接口读内存，C5 后半句不满足；内存会话字典无上限 | 数据库为真相源、内存为 LRU 热缓存，首次访问回填 | `5c23ab4` |
-| 5 | 限流测试 `test_memory_table_bounded` 什么都没测；`_make_app` 传的参数从未生效 | 重写并做反向验证；中间件参数改构造注入 | `fa3e794` |
+| 1 | service 反向 import api（`ingest_service` → `api.upload`） | 临时文件工具移到 `services/temp_files.py`；**架构规则 6**：api > services > repositories > db 下层不得 import 上层 | `2c996e3` |
+| 2 | 卡在 running 的任务永不回收；启动时清掉全部 pending 会在多副本下误杀；抢占失败分支泄漏临时文件 | `fail_stale` 按年龄把超时 pending/running 标 error；清扫器启动即扫并定期扫 | `70aa425` |
+| 3 | T4 被标完成，但"缓存防御"一行代码没有；`kb_version` 只有异步上传会自增 | 缓存正式移出 M2；`kb_version` 自增收拢到 `invalidate_retrieval_caches`，四条变更路径一致 | `7848f14` |
+| 4 | T5 只写库不读库：重启后上下文为空、历史接口读内存，C5 后半句不满足；内存会话字典无上限 | 数据库为真相源、内存为 LRU 热缓存，首次访问回填 | `4131595` |
+| 5 | 限流测试 `test_memory_table_bounded` 什么都没测；`_make_app` 传的参数从未生效 | 重写并做反向验证；中间件参数改构造注入 | `01c0784` |
 | 6 | 计划书、docstring 与实现不符（降级策略、FIFO/LRU、滑动/固定窗口、T6 端点） | 文档改为与代码一致并写明理由 | 各提交 |
-| 7 | `.env.example` 缺 T4/T6 新增配置；本文件多处过期 | 同步 | 本提交 |
+| 7 | `.env.example` 缺 T4/T6 新增配置；本文件多处过期 | 同步 | `01b74d3` |
 
 ## Repository 层的三条硬约束
 
