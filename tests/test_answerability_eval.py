@@ -269,3 +269,19 @@ class TestBootstrap:
         preds = cross_validate(samples, "R0 top1").preds
         ci = bootstrap(samples, preds, baseline=preds, n=200)
         assert ci["d_recall"] == (0.0, 0.0) and ci["d_frr"] == (0.0, 0.0)
+
+
+class TestLegacyRerankRecords:
+    def test_undo_double_sigmoid_is_exact_inverse(self):
+        import math
+        from rag.eval.answerability import undo_double_sigmoid
+
+        probs = [0.001, 0.3, 0.786, 0.999]
+        stored = [1 / (1 + math.exp(-p)) for p in probs]  # 修复前的双重 sigmoid
+        r = _qr("1", ["a", "b", "c", "d"], stored, [])
+        assert undo_double_sigmoid([r])[0].relevances == pytest.approx(probs, abs=1e-6)
+
+    def test_rerank_basis_keeps_near_zero_scores(self):
+        """rerank 口径不做 0.0 ⇒ 缺失：概率可以合法地接近 0。"""
+        r = _qr("1", ["a", "b"], [0.9, 0.0], [])
+        assert build_samples([r], k=20, basis=BASIS_RERANK)[0].signals.n_scored == 2

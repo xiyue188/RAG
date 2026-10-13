@@ -15,12 +15,19 @@ k 取两种可见性：
 
 前者回答"不改接口能做到多少"，后者回答"把候选分数传下去值不值"。
 
-## 0.0 视为缺失
+## 0.0 视为缺失（仅余弦口径）
 
 run 记录只存了 relevance 浮点数，丢了 `has_relevance_signal` 标记。
 RRF 方案里只被 BM25 召回的条目 relevance 为 0.0（无向量距离）。
-按 `0.0 ⇒ 缺失` 还原：余弦口径下真实的 0.0 需要两向量方向相反，
-rerank 口径下需要 logit 为负无穷，实际都不出现。
+余弦口径按 `0.0 ⇒ 缺失` 还原：真实的 0.0 需要两向量方向相反，实际不出现。
+rerank 口径下每条候选都被精排过、没有缺失，且概率可以合法地接近 0，不做此还原。
+
+## M1 的 rerank 记录要先还原
+
+修复 `4d933b8` 之前，rerank 分数被 sigmoid 了两次，记录里存的是
+`s = sigmoid(p)`（p 才是模型给出的相关概率），值域 [0.5, 0.731]。
+`undo_double_sigmoid` 精确还原 `p = ln(s / (1 - s))`。不还原也能得到同样
+的识别率（单调变换不改变排序），但阈值会落在错误的尺度上，无法用于生产。
 
 ## 选参与计分分离
 
@@ -39,8 +46,9 @@ rerank 口径下需要 logit 为负无穷，实际都不出现。
 
 from __future__ import annotations
 
+import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -78,6 +86,15 @@ RULES: Dict[str, Tuple[str, ...]] = {
 _FEATURE_OF = {"min_top1": "top1", "min_gap12": "gap12", "min_gap_bg": "gap_bg"}
 
 
+def undo_double_sigmoid(results: Iterable[QueryResult]) -> List[QueryResult]:
+    """还原修复前 rerank 记录的分数：p = ln(s / (1 - s))。见模块说明。"""
+    fixed = []
+    for r in results:
+        rel = [math.log(s / (1.0 - s)) if 0.0 < s < 1.0 else s for s in r.relevances]
+        fixed.append(replace(r, relevances=[round(p, 6) for p in rel]))
+    return fixed
+
+
 def build_samples(
     results: Iterable[QueryResult], k: int, basis: str = BASIS_COSINE
 ) -> List[Sample]:
@@ -105,7 +122,10 @@ def build_samples(
 
 
 def _signals(ranked: Sequence[Tuple[str, float]], basis: str) -> AnswerabilitySignals:
-    scores = [s for _, s in ranked if s > 0.0]  # 0.0 ⇒ 缺失，见模块说明
+    if basis == BASIS_COSINE:
+        scores = [s for _, s in ranked if s > 0.0]  # 0.0 ⇒ 缺失，见模块说明
+    else:
+        scores = [s for _, s in ranked]
     # 前 k 条全部无信号：生产里 assess 会走"无信号 → 信任排序"分支
     return extract_signals(scores, basis if scores else BASIS_NONE)
 
