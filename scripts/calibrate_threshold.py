@@ -1,6 +1,10 @@
 """
 无答案阈值校准
 
+**已被 `scripts/eval_answerability.py` 取代（M3 A1）。** 本脚本保留用于复现 M1
+的原始报告，有两处已知偏差：0.05 步长会跨过拐点；有答案样本取
+`relevances[0]` 而生产取最高分。新的结论与方法见 `docs/eval/answerability.md`。
+
 解决 M0 遗留问题：ANSWERABLE_MIN_RELEVANCE 的初值 0.50 是拍定的，
 且已被证明偏低（59 chunk 小语料上无答案查询得 0.692，被误判为可答）。
 
