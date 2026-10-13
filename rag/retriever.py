@@ -470,10 +470,18 @@ class Retriever:
             # 准备输入对 [query, document]
             pairs = [[query, r['document']] for r in results]
 
-            # 重新打分。CrossEncoder 输出的是未过激活函数的 logit（可为负、
-            # 量级可达 ±11），不是 [0,1] 的分数，故字段名为 rerank_logit。
-            # sigmoid(logit) 才是模型估计的相关概率，由 compute_relevance 负责。
-            scores = reranker.predict(pairs)
+            # 重新打分，取**未过激活函数的 logit**，sigmoid 由 compute_relevance 做。
+            #
+            # 必须显式传 Identity：sentence-transformers 对单输出模型
+            # （num_labels=1，bge-reranker 即是）的 predict() 默认套一层 Sigmoid，
+            # 返回的已是概率。此前这里不传，compute_relevance 再套一次，
+            # 实际得到 sigmoid(sigmoid(logit)) ∈ [0.5, 0.731] —— M1 的 6000 个
+            # rerank 分数全部落在这个区间。后果：开启 rerank 时 relevance 恒低于
+            # 0.75 的可答阈值，所有查询都被判为不可答；前端显示的相关性被压在
+            # 50%-73%。排序不受影响（单调变换），M1 的 MRR/nDCG 结论仍成立。
+            import torch
+
+            scores = reranker.predict(pairs, activation_fn=torch.nn.Identity())
 
             for i, result in enumerate(results):
                 result['rerank_logit'] = float(scores[i])
