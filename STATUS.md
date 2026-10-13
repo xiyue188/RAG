@@ -4,8 +4,8 @@
 
 ## 当前位置
 
-**阶段**：M2 基础设施 —— **完成** ✓
-**计划书**：`docs/plans/M2-infrastructure.md`
+**阶段**：M3 证据质量与 Agentic 编排 —— **进行中**（A1 可答性 v1）
+**计划书**：`docs/plans/M3-agent.md`（M2 已完成，见 `docs/plans/M2-infrastructure.md`）
 
 ## 下一步：单一有序清单
 
@@ -23,10 +23,18 @@
 | 7 | **T4** 限流迁移（缓存部分已移出 M2） | C6/C7 | **完成** |
 | 8 | **T6** 异步摄入 | C8：上传立即返回 task_id | **完成** |
 | 9 | **M2 收口** | 逐项审查后补齐的 7 处问题，见下方「M2 收口」 | **完成** |
-| — | **← M2 完成（当前位置）** | 331 passed；`vue-tsc` exit 0 | |
-| 10 | M3 工具 `Protocol` + dispatcher | 加新工具不需改 dispatcher | M3 |
-| 11 | M3 answerability 重做 | `rag/eval/` 能直接跑可答性评测 | M3 |
-| 12 | M5 `LLMProvider` Port + fake | CI 跑通端到端测试且无真实 API 调用 | M5 |
+| — | **← M2 完成** | 331 passed；`vue-tsc` exit 0 | |
+| 10 | **M3 A1** 可答性 v1：规则 + 评测框架 | 交叉验证识别率与 95% CI，对比基线 19.1%/3.0% | **进行中（当前位置）** |
+| — | ← 停下来 review | | |
+| 11 | M3 A2 rerank 可用性（含检索缓存做不做） | 候选数 × 延迟/质量表 + ADR-006 | |
+| 12 | M3 A3 可答性 v2：灰区 LLM 校验 | 额外调用比例 vs 识别率提升 | |
+| 13 | M3 A4 生产接入 + 阈值分口径 | 拒答带 reason；按口径配色 | |
+| — | ← 停下来 review | | |
+| 14 | M3 A5 历史补丁与 BM25 离线评估 | 保留/删除结论 + 数字 | 可穿插 |
+| 15 | M3 B1–B6 状态机、轨迹、路由、工具、dispatcher、Agent 循环 | 见计划书 | |
+| 16 | M3 C1–C2 citation_verify + 引用指标 | 准确率/覆盖率 + 人工一致率 | |
+| — | **← M3 完成** | | |
+| 17 | M5 `LLMProvider` Port + fake | CI 跑通端到端测试且无真实 API 调用 | M5 |
 
 T0 是 T3 完成后审计出五处规则漂移而插入的，详见计划书 T0 节
 与 [ADR-004](docs/decisions/ADR-004-layering-and-rule-placement.md)。

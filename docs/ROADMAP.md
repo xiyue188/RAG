@@ -25,11 +25,11 @@
 | M0 | 地基修正：分数口径、中文模型、RRF、chunk 定位 | 6-8h | **完成** | [M0](plans/M0-foundation.md) |
 | M1 | 评测集与检索实验 | 14-18h | **完成** | [M1](plans/M1-evaluation.md) |
 | M2 | 基础设施：PG + Redis + 异步摄入 | 8-10h | **完成** | [M2](plans/M2-infrastructure.md) |
-| M3 | Agentic 编排：路由、工具、引用校验 | 18-22h | 未开始 | 待写 |
+| M3 | 证据质量 + Agentic 编排：可答性、rerank、路由、工具、引用校验 | 30-36h | **进行中** | [M3](plans/M3-agent.md) |
 | M4 | 大脑面板改造：轨迹、证据、校验视图 | 8-10h | 未开始 | 待写 |
 | M5 | 测试、Docker、README、安全 | 8-10h | 未开始 | 待写 |
 
-累计约 60-80 小时。
+累计约 72-94 小时（M3 吸收了 M1/M2 移交的遗留项后上调）。
 
 ## 依赖关系
 
